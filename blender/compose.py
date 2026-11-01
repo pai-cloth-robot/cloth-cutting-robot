@@ -1,8 +1,7 @@
-"""最終動画(bear3版)をBlenderのシーケンサー(VSE)で組み立て、MP4(H.264・1280x720・24fps)にする。
+"""最終動画(人台版)をBlenderのシーケンサー(VSE)で組み立て、MP4(H.264・1280x720・24fps)にする。
 
-実行: Blender -b --factory-startup -P blender/compose.py -- [--version bear3|dressform]
+実行: Blender -b --factory-startup -P blender/compose.py -- [--version dressform]
       [--robot renders/anim_er_<版>_front_marks] [--out renders/video/final_<版>.mp4]
-保険の版(final.mp4を作った流れ)は blender/compose_v1.py。
 
 区間: タイトル → 仕組み → ERが服を設計 → 投影と微調整 → 平面に展開 → 布の型紙 → ERが切る線を選ぶ
       → ロボットの切断 → エンディング
@@ -27,7 +26,7 @@ FADE = 12  # 展開の最後のコマから型紙画面へのクロスフェー�
 SECONDS = {"pattern": 6, "title": 4, "pipeline": 9, "bear_front": 2.5, "design": 7, "morph_each": 1.2, "overhead": 5,
            "select": 8, "robot_hold": 2, "ending": 6}
 def assets_for(model: str, front_dir: str, garment: str) -> dict:
-    """版ごとの素材のパス。命名はbear3と同じ規則(<model>_front・overhead_<model>_front_marks)。"""
+    """版ごとの素材のパス(<model>_front・overhead_<model>_front_marks)。"""
     out, er = ROOT / "renders", ROOT / "er" / "out"
     return {
         "bear_front": out / front_dir / "front.png",
@@ -48,22 +47,12 @@ def assets_for(model: str, front_dir: str, garment: str) -> dict:
 
 # 版: --versionで選ぶ。subjectはテロップでの呼び名
 VERSIONS = {
-    "bear3": {
-        "subject": "クマ",
-        "short": "クマ",
-        "assets": assets_for("bear3", "bear3", "タンクトップの前身頃"),
-        # ERの理由(英語)の日本語訳。原文はER出力の"reason"から読んで小さく添える
-        "reason_ja": {
-            "design_er": "首と腕の付け根を余裕をもって回り込む切り欠きを付け、胸とお腹に沿う前身頃にした",
-            "select_er": "外側の実線が服のパーツの裁断境界だから",
-        },
-    },
     "dressform": {
         "subject": "人台(1/2スケールのマネキン)",
         "short": "人台",  # 長いと仕組みと見出しが折り返すので、短い呼び名も持つ
         "assets": assets_for("dressform", "dressform", "服の前身頃") | {
             "pattern_view": ROOT / "renders" / "dressform" / "pattern_view.png",
-            # 布に描いたのは製図の形に整えた型紙(drafted)
+            # 布に描いたのは平面に開いた形のままの型紙(drafted)
             "select_overlay": ROOT / "er" / "out" / "overhead_dressform_front_drafted_marks_overlay.png",
             "select_er": ROOT / "er" / "out" / "overhead_dressform_front_drafted_marks_er.json",
             "robot": ROOT / "renders" / "anim_er_dressform_front_drafted_marks",
@@ -84,11 +73,11 @@ VERSIONS = {
                 "② Python(Blender API): ERの線を3Dの人台に投影し、洋裁の基準線(脇・肩・袖ぐり)に合わせて補正し、"
                 "平面の型紙に展開\n"
                 "③ Blender: 型紙を布に描く(実線=裁つ線、破線=縫う線)\n"
-                "④ Gemini Robotics-ER: 『型紙のパーツを切り抜いて』とだけ指示し、布の画像から切る線を判断\n"
+                "④ Gemini Robotics-ER: 『型紙のパーツを切り抜いて』と指示し、布の画像から切る線を判断\n"
                 "⑤ MuJoCo: 刃先が線をなぞるPandaの関節角を計算(IK)\n"
                 "⑥ Blender: 関節角どおりにPandaを動かして、布を切る様子を描画"
             ),
-            "select": "『型紙のパーツを切り抜いて』とだけ指示 → ERは外側の実線(裁ち切り線)を選んだ",
+            "select": "『型紙のパーツを切り抜いて』と指示 → ERは外側の実線(裁ち切り線)を選んだ",
             "robot": "ERが選んだ線に沿ってPandaが切り、ERが示した点をつかんで持ち上げる(等倍)",
             "ending_title": "今回の限界と今後",
             # テキストのストリップは空白でしか折り返さないので、日本語は手で改行する
@@ -105,9 +94,9 @@ VERSIONS = {
         "robot_offset_y": 60,  # ロボットの映像を上へずらす(px)。下端のテロップと布が重ならないように
     },
 }
-ASSETS: dict = VERSIONS["bear3"]["assets"]
-REASON_JA: dict = VERSIONS["bear3"]["reason_ja"]
-SUBJECT = VERSIONS["bear3"]["subject"]
+ASSETS: dict = VERSIONS["dressform"]["assets"]
+REASON_JA: dict = VERSIONS["dressform"]["reason_ja"]
+SUBJECT = VERSIONS["dressform"]["subject"]
 
 PIPELINE_TEXT = (
     "① Gemini Robotics-ER: {subject}の正面画像を見て、服(前身頃)の線を設計\n"
@@ -231,7 +220,7 @@ def er_section(tl: "Timeline", image: Path, er_json: Path, heading: str, length:
 def main() -> None:
     argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
-    ap.add_argument("--version", default="bear3", choices=list(VERSIONS), help="素材の版(bear3・dressform)")
+    ap.add_argument("--version", default="dressform", choices=list(VERSIONS), help="素材の版")
     ap.add_argument("--robot", type=Path, default=None, help="ロボットの切断の連番PNGのフォルダ(既定は版の素材)")
     ap.add_argument("--out", type=Path, default=None, help="出力(既定はrenders/video/final_<版>.mp4)")
     args = ap.parse_args(argv)
@@ -294,7 +283,7 @@ def main() -> None:
     tl.text("前身頃を平面の型紙に展開", n)
     tl.advance("平面に展開", n)
 
-    # 5b. 製図の形に整えた型紙画面(展開の最後のコマからクロスフェード)
+    # 5b. 平面に開いた形のままの型紙画面(展開の最後のコマからクロスフェード)
     if ASSETS["pattern_view"]:
         n = sec["pattern"]
         tl.background(n)
@@ -305,7 +294,7 @@ def main() -> None:
         v.keyframe_insert("blend_alpha", frame=tl.frame - FADE)
         v.blend_alpha = 1.0
         v.keyframe_insert("blend_alpha", frame=tl.frame)
-        tl.text("平面に開き、製図の形に整えた前身頃の型紙(1/2スケール)", n, y=0.02, channel=7)
+        tl.text("平面に開いた形をもとに、縫い合わせる辺(肩・脇・裾)を直線にした型紙(1/2スケール)", n, y=0.02, channel=7)
         tl.advance("型紙画面", n)
 
     # 6. 布の型紙

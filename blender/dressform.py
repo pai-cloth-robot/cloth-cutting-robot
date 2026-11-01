@@ -7,7 +7,7 @@
     renders/dressform/front.png / front.json   人台の正面画像とカメラ情報
     renders/dressform/look_front.png / look_oblique.png   形の確認用
 段階2(ERの後): Blender -b --factory-startup -P blender/dressform.py -- [--er er/out/dressform_front_er.json] [--anim]
-    patterns/dressform_front.json と renders/dressform/ の画像(bear3と同じ構成)、
+    patterns/dressform_front.json と renders/dressform/ の画像、
     renders/dressform/distortion.json  展開のゆがみ(面ごとの伸び縮み)
 
 人台は-y方向を向いて立つ。腰の切り口がz=0、首の付け根がz≈29cm。単位m。
@@ -59,6 +59,9 @@ Z_SHOULDER = 0.262  # 肩先の高さの目安
 Y_SHOULDER = 0.0  # 肩線と脇線が乗る前後の境界の面
 Z_WAIST = 0.090  # ウエストラインの高さ(SECTIONSのウエスト)
 Z_HIP = 0.012  # ヒップラインの高さ(腰の切り口のすぐ上)
+SHOULDER_TIP_X = 0.062  # 肩先(肩線の外端)の横位置。腕の付け根の切り口(ARM_CUT_X)より内側で終える
+# 袖ぐりの線: (高さz, 中心からの横位置x)。肩先から体の前面を内側へくぼんで下り、脇の下で脇線につながる
+ARMHOLE = ((Z_ARMPIT, 0.074), (0.220, 0.063), (0.232, 0.057), (0.248, 0.058), (0.268, SHOULDER_TIP_X))
 # 展開の方法。CONFORMAL(等角写像)は脇や肩で面積の縮みが大きいので、伸びを最小にするSLIMを使う
 UNWRAP_METHOD = "MINIMUM_STRETCH"
 
@@ -139,10 +142,10 @@ def assign_roles(pts: list[Vector]) -> list[str]:
             roles.append("hem")  # 裾: ERの高さのまま
         elif p.z > Z_NECK - 0.002:
             roles.append("neck")  # 首にかかった点 → 首の付け根の線
-        elif p.z >= Z_SHOULDER and ax >= NECK_R:
+        elif p.z >= Z_SHOULDER and NECK_R <= ax < SHOULDER_TIP_X:
             roles.append("shoulder")  # 肩の上 → 稜線
-        elif Z_ARMPIT <= p.z < Z_SHOULDER and ax >= 0.04:
-            roles.append("armhole")  # 腕の付け根の高さの外側 → 切り口の前の縁
+        elif p.z >= Z_ARMPIT and ax >= 0.04:
+            roles.append("armhole")  # 腕の付け根の高さの外側 → 前面の袖ぐりの線
         elif p.z < Z_ARMPIT and ax >= 0.03:
             roles.append("side")  # 脇の下より下の外側 → 体の真横
         else:
@@ -158,8 +161,10 @@ def reference_point(bvh: BVHTree, p: Vector, role: str) -> Vector | None:
         hit, *_ = bvh.ray_cast(Vector((x, -1.0, Z_NECK)), Vector((0, 1, 0)))
     elif role == "shoulder":  # 肩の上の稜線(前後の境界)
         hit, *_ = bvh.ray_cast(Vector((p.x, Y_SHOULDER, 1.0)), Vector((0, 0, -1)))
-    elif role == "armhole":  # 切り口の前の縁
-        hit, *_ = bvh.ray_cast(Vector((sgn * (ARM_CUT_X - 0.0015), -1.0, p.z)), Vector((0, 1, 0)))
+    elif role == "armhole":  # 前面の袖ぐりの線(腕の付け根の切り口より内側をくり抜く)
+        z = min(max(p.z, ARMHOLE[0][0]), ARMHOLE[-1][0])
+        x = float(np.interp(z, [a[0] for a in ARMHOLE], [a[1] for a in ARMHOLE]))
+        hit, *_ = bvh.ray_cast(Vector((sgn * x, -1.0, z)), Vector((0, 1, 0)))
     elif role == "side":  # 体の真横(前後の境界)
         hit, *_ = bvh.ray_cast(Vector((sgn * 0.5, Y_SHOULDER, p.z)), Vector((-sgn, 0, 0)))
     else:
@@ -239,7 +244,7 @@ def adjust_dressform(bvh: BVHTree, projected: list[Vector]) -> tuple[list[Vector
         "moved_max_mm": max(dist) * 1000,
         "moved_mean_mm": sum(dist) / n * 1000,
         "rules": ["左右対称", "脇線=体の真横(前後の境界)", "肩線=肩の上の稜線(前後の境界)",
-                  "袖ぐり=腕の付け根の切り口の前の縁", "首にかかった線=首の付け根の線(それより下の襟ぐりはERの深さのまま)",
+                  "袖ぐり=腕の付け根の切り口より内側を、肩先から脇の下へくぼむ線", "首にかかった線=首の付け根の線(それより下の襟ぐりはERの深さのまま)",
                   "裾=ERの線の高さのまま", "表面に沿ってならす(ならすたびに基準線へ戻す)"],
     }
 
@@ -504,9 +509,9 @@ def style_for_unfold(body: bpy.types.Object, bvh: BVHTree, garment: bpy.types.Ob
         me.attributes.new(name, "FLOAT", "POINT").data.foreach_set("value", vals)
     me.materials.clear()
     me.materials.append(cloth_material())
-    garment.modifiers["Thick"].thickness = 0.003
+    garment.modifiers["Thick"].thickness = 0.0012
     bev = garment.modifiers.new("SoftEdge", "BEVEL")  # 厚みの縁を丸める
-    bev.width, bev.segments, bev.limit_method = 0.0012, 3, "ANGLE"
+    bev.width, bev.segments, bev.limit_method = 0.0005, 3, "ANGLE"
     print(f"人台のテープ{n}本、布のガイドライン(前中心・バスト・ウエスト・プリンセス)")
 
 
@@ -517,6 +522,7 @@ def configure_bear2() -> None:
     bear2.PATTERN_NAME = "dressform_front"
     bear2.adjust_line = adjust_dressform
     bear2.RELAX_ITERS = 40
+    bear2.OFFSET = 0.0015  # 布を人台に沿わせる(厚み1.2mmは内側へ付くので、表面から0.3〜1.5mm)
     bear2.bear.UNWRAP_METHOD = UNWRAP_METHOD
     bear2.bear.MAX_SIZE = 0.35  # 1/2スケールの実寸を保つ(縫い代込みで50cm角の布に収まる)
     bear2.HEAD_C = Vector((0, 0, 0.17))  # 光線が体に当たらないときの深さの基準(胴の中心)

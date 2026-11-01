@@ -1,7 +1,7 @@
 """机・布・型紙の線・照明・俯瞰カメラを作り、俯瞰画像とカメラ情報を出力する。
 
-実行: Blender -b --factory-startup -P blender/scene.py -- --pattern star [--marks]
-      --patternはcircle/star/wave/bodice(平面の前身頃)か、patterns/<名前>.jsonの名前
+実行: Blender -b --factory-startup -P blender/scene.py -- --pattern dressform_front_drafted --marks
+      --patternはpatterns/<名前>.jsonの名前(circle/star/wave/bodiceは動作確認用の図形)
 出力: renders/overhead_<pattern>[_marks].png / .json
 --marks: 服の型紙らしく、裁ち切り線(実線・切る線)の内側に出来上がり線(破線)と布目線(矢印)を描く。
          切るべきは外側の実線で、内側の破線は切ってはいけない紛らわしい線になる
@@ -206,7 +206,29 @@ def fabric_material(color: tuple[float, float, float]) -> bpy.types.Material:
     bump = n.new("ShaderNodeBump")
     bump.inputs["Strength"].default_value = 0.25
     link(weave.outputs["Value"], bump.inputs["Height"])
-    link(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    # 机に置いた綿のゆるい波打ちとしわ(数cm〜十数cmの起伏)。画用紙のような平らさを消す
+    wavy = n.new("ShaderNodeTexNoise")
+    wavy.inputs["Scale"].default_value = 3.5
+    wavy.inputs["Detail"].default_value = 3.0
+    wavy.inputs["Distortion"].default_value = 0.6
+    link(coord.outputs["Object"], wavy.inputs["Vector"])
+    crease = n.new("ShaderNodeTexWave")
+    crease.wave_type, crease.bands_direction = "BANDS", "DIAGONAL"
+    crease.inputs["Scale"].default_value = 5.0
+    crease.inputs["Distortion"].default_value = 9.0
+    crease.inputs["Detail"].default_value = 2.0
+    link(coord.outputs["Object"], crease.inputs["Vector"])
+    relief = n.new("ShaderNodeMath")
+    relief.operation = "MULTIPLY_ADD"
+    link(crease.outputs["Fac"], relief.inputs[0])
+    relief.inputs[1].default_value = 0.35
+    link(wavy.outputs["Fac"], relief.inputs[2])
+    folds = n.new("ShaderNodeBump")
+    folds.inputs["Strength"].default_value = 0.75
+    folds.inputs["Distance"].default_value = 0.03
+    link(relief.outputs["Value"], folds.inputs["Height"])
+    link(bump.outputs["Normal"], folds.inputs["Normal"])
+    link(folds.outputs["Normal"], bsdf.inputs["Normal"])
     noise = n.new("ShaderNodeTexNoise")
     noise.inputs["Scale"].default_value = 6.0
     noise.inputs["Detail"].default_value = 6.0
@@ -347,7 +369,7 @@ def build_scene(pattern: str, marks: bool = False) -> dict:
 def main() -> None:
     argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pattern", default="star")
+    ap.add_argument("--pattern", default="dressform_front_drafted")
     ap.add_argument("--marks", action="store_true")
     args = ap.parse_args(argv)
 

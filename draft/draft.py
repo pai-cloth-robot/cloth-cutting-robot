@@ -1,9 +1,9 @@
-"""平面に開いた人台の前身頃を、製図の形(直線の脇・裾・肩、なめらかな襟ぐり・袖ぐり)に整え、
-CAD風の型紙画面を描く。
+"""平面に開いた人台の前身頃をもとに、縫い合わせる辺(肩線・脇線・裾)を頂点どうしの直線にした型紙を作り、
+CAD風の型紙画面を描く。袖ぐり・襟ぐりは平面に開いた曲線のまま。
 
 実行: uv run python draft/draft.py
 入力: renders/dressform/flat_boundary.json(blender/dressform.pyの段階2が書く。点・役割・3Dの高さ)
-出力: patterns/dressform_front_drafted.json  整えた型紙(patterns/*.jsonと同じ形式+vertices・segments)
+出力: patterns/dressform_front_drafted.json  型紙(patterns/*.jsonと同じ形式+vertices・segments)
       renders/dressform/pattern_view.png    CAD風の型紙画面(1280x720)。出来上がり線(破線)、縫い代1cmの
                                             裁ち切り線(実線、角はマイター)、布と同じガイドライン(前中心・
                                             プリンセスライン・バストライン・ウエストライン)、寸法の測り方
@@ -106,23 +106,60 @@ def draft(src: dict) -> tuple[np.ndarray, dict, dict, np.ndarray]:
         "neckline": neck_curve,
     }
     # 前中心の裾から反時計回り: 右半分(裾→脇→袖ぐり→肩→襟ぐり)→左半分(鏡映、逆順)
-    right = np.vstack([segs_right["hem"], segs_right["side"][1:], segs_right["armhole"][1:],
-                       segs_right["shoulder"][1:], segs_right["neckline"][1:]])
-    left = right[::-1][1:-1] * [-1, 1]
-    ring = np.vstack([right, left])
+    del segs_right  # 曲線のならしはしない(平面に開いた形をもとにする)
+    # 輪郭は平面に開いた形そのもの。画素の段差だけを軽くならす
+    ring = pts.copy()
+    for _ in range(2):
+        ring = 0.5 * ring + 0.25 * (np.roll(ring, 1, axis=0) + np.roll(ring, -1, axis=0))
+    snap_i = lambda q: int(np.argmin(np.linalg.norm(ring - q, axis=1)))  # noqa: E731
     vertices = {"shoulder_tip": shoulder_tip, "side_neck": side_neck, "cf_neck": cf_neck,
                 "underarm": underarm, "hem_corner": hem_corner, "cf_hem": cf_hem}
     if waist is not None:
         vertices["waist_side"] = waist
+    idx = {k: snap_i(v) for k, v in vertices.items()}
+    vertices = {k: ring[i].copy() for k, i in idx.items()}
+    # 他のパーツと縫い合わせる辺(肩線・脇線・裾)は、頂点どうしを結ぶ直線にする(左右とも)。
+    # 袖ぐり・襟ぐりは平面に開いた曲線のまま
+    order = ["underarm", "waist_side", "hem_corner"] if "waist_side" in idx else ["underarm", "hem_corner"]
+    pairs = [("side_neck", "shoulder_tip")] + list(zip(order, order[1:]))
+    n = len(ring)
+    for sgn in (1, -1):
+        side_idx = {k: (i if sgn > 0 else snap_i(vertices[k] * [-1, 1])) for k, i in idx.items()}
+        for a, b in pairs:
+            i, j = side_idx[a], side_idx[b]
+            fwd = (j - i) % n
+            if fwd > n // 2:  # 短い側を通る
+                i, j, fwd = j, i, n - fwd
+            pa, pb = ring[i].copy(), ring[j].copy()
+            for k in range(1, fwd):
+                ring[(i + k) % n] = pa + (pb - pa) * k / fwd
+    # 裾: 左右の裾の角を結ぶ1本の直線(前中心の裾もこの線の上に置く)
+    i, j = idx["hem_corner"], snap_i(vertices["hem_corner"] * [-1, 1])
+    fwd = (j - i) % n
+    if fwd > n // 2:
+        i, j, fwd = j, i, n - fwd
+    pa, pb = ring[i].copy(), ring[j].copy()
+    for k in range(1, fwd):
+        ring[(i + k) % n] = pa + (pb - pa) * k / fwd
+    vertices["cf_hem"] = ring[idx["cf_hem"]].copy()
+
+    def arc(a: str, b: str) -> float:
+        """輪郭に沿った2つの頂点の間の長さ(短い側)。"""
+        i, j = sorted((idx[a], idx[b]))
+        seg = np.linalg.norm(np.diff(np.vstack([ring, ring[:1]]), axis=0), axis=1)
+        inner = float(seg[i:j].sum())
+        return min(inner, float(seg.sum()) - inner)
+
     lengths = {
-        "shoulder": length(segs_right["shoulder"]),
-        "neckline_half": length(segs_right["neckline"]),
-        "armhole": length(segs_right["armhole"]),
-        "side": length(segs_right["side"]),
-        "hem_half": length(segs_right["hem"]),
-        "center_front": float(cf_neck[1] - cf_hem[1]),
+        "shoulder": arc("shoulder_tip", "side_neck"),
+        "neckline_half": arc("side_neck", "cf_neck"),
+        "armhole": arc("shoulder_tip", "underarm"),
+        "side": arc("underarm", "hem_corner"),
+        "hem_half": arc("cf_hem", "hem_corner"),
+        "center_front": float(vertices["cf_neck"][1] - vertices["cf_hem"][1]),
     }
-    return ring, vertices, lengths, pts
+    keep = np.linalg.norm(ring - np.roll(ring, 1, axis=0), axis=1) > 1e-5  # 重なった点(縫い代の角が乱れる)を除く
+    return ring[keep], vertices, lengths, pts
 
 
 def poly_area(p: np.ndarray) -> float:
@@ -296,7 +333,7 @@ def render_view(ring: np.ndarray, vertices: dict, lengths: dict, bust_y: float, 
     labels = [
         (mid(v["shoulder_tip"], v["side_neck"]) + [0.014, 0.012], f"肩線 {lengths['shoulder'] * 100:.1f} cm"),
         (v["cf_neck"] + [0.012, -0.022], f"襟ぐり(片側) {lengths['neckline_half'] * 100:.1f} cm"),
-        (mid(v["shoulder_tip"], v["underarm"]) + [0.018, 0.0], f"袖ぐり {lengths['armhole'] * 100:.1f} cm"),
+        (mid(v["shoulder_tip"], v["underarm"]) + [0.038, -0.012], f"袖ぐり {lengths['armhole'] * 100:.1f} cm"),
         (mid(v["underarm"], v["hem_corner"]) + [0.016, 0.0], f"脇線 {lengths['side'] * 100:.1f} cm"),
         (mid(v["cf_hem"], v["hem_corner"]) + [0.0, -0.02], f"裾(片側) {lengths['hem_half'] * 100:.1f} cm"),
         (mid(v["cf_neck"], v["cf_hem"]) + [-0.072, 0.03], f"前丈 {lengths['center_front'] * 100:.1f} cm"),
@@ -305,7 +342,7 @@ def render_view(ring: np.ndarray, vertices: dict, lengths: dict, bust_y: float, 
         x, y = to_px(p)
         d.text((x, y), text, font=f, fill=(235, 235, 240, 255), anchor="lm")
     d.text((28, 22), "前身頃(1/2スケール)", font=fb, fill=(245, 245, 250, 255))
-    d.text((28, 58), "人台の体に合わせて展開し、製図の形に整えた型紙  単位: cm", font=f, fill=(190, 190, 200, 255))
+    d.text((28, 58), "平面に展開し、縫い合わせる辺(肩・脇・裾)を直線にした型紙  単位: cm", font=f, fill=(190, 190, 200, 255))
     # 凡例
     lx, ly = 30, 100
     d.line([(lx, ly), (lx + 40, ly)], fill=(245, 150, 60, 255), width=3)
@@ -352,7 +389,7 @@ def main() -> None:
         "closed": True,
         "scale": round(scale, 6),
         "size_m": [round(w * scale, 4), round(h * scale, 4)],
-        "source": "dressform_front.json(flat_boundary.json)を製図の形に整えたもの",
+        "source": "flat_boundary.json(平面に開いた形)の肩線・脇線・裾を直線にしたもの",
         "vertices": verts_c,
         "segments_cm": {k: round(v * scale * 100, 2) for k, v in lengths.items()},
         "moved_mm": {"max": round(float(moved.max()), 2), "mean": round(float(moved.mean()), 2)},
