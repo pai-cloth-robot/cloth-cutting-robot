@@ -1,0 +1,1 @@
+source: https://github.com/google-deepmind/mujoco_menagerie commit b0655057a9df2abe39ea7fc989914ba6f248301c (franka_emika_panda/)
