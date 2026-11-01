@@ -1,10 +1,12 @@
-"""最終動画をBlenderのシーケンサー(VSE)で組み立て、MP4(H.264・1280x720・24fps)にする。
+"""最終動画(bear3版)をBlenderのシーケンサー(VSE)で組み立て、MP4(H.264・1280x720・24fps)にする。
 
-実行: Blender -b --factory-startup -P blender/compose.py -- [--robot renders/anim_er_star]
-      [--overlay er/out/overhead_star_overlay.png] [--out renders/video/final.mp4]
+実行: Blender -b --factory-startup -P blender/compose.py -- [--version bear3|dressform]
+      [--robot renders/anim_er_<版>_front_marks] [--out renders/video/final_<版>.mp4]
+保険の版(final.mp4を作った流れ)は blender/compose_v1.py。
 
-区間: タイトル → 仕組み → クマの展開 → 布の俯瞰 → ERの推論 → ロボットの切断 → エンディング
-秒数は下のSECONDSで変える。課題の規定で全体を1〜3分に収める(外れたら警告を出す)。
+区間: タイトル → 仕組み → ERが服を設計 → 投影と微調整 → 平面に展開 → 布の型紙 → ERが切る線を選ぶ
+      → ロボットの切断 → エンディング
+秒数はSECONDS、素材と呼び名はVERSIONSで変える。課題の規定で全体を1〜3分に収める(外れたら警告を出す)。
 """
 
 import argparse
@@ -21,22 +23,69 @@ W, H = 1280, 720
 FONT_BOLD = "/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc"
 FONT_REG = "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc"
 
-SECONDS = {"title": 4, "pipeline": 7, "overhead": 5, "er": 9, "robot_hold": 2, "ending": 6}
-BEAR_DIR = ROOT / "renders" / "bear" / "anim"
-OVERHEAD = ROOT / "renders" / "overhead_bear_front_marks.png"
-OVERLAY_MAIN = ROOT / "er" / "out" / "overhead_bear_front_marks_overlay.png"
-OVERLAY_TEMP = ROOT / "er" / "out" / "overhead_star_overlay.png"
-ROBOT_TEMP = ROOT / "renders" / "anim_er_star"
+FADE = 12  # 展開の最後のコマから型紙画面へのクロスフェード(フレーム)
+SECONDS = {"pattern": 6, "title": 4, "pipeline": 9, "bear_front": 2.5, "design": 7, "morph_each": 1.2, "overhead": 5,
+           "select": 8, "robot_hold": 2, "ending": 6}
+def assets_for(model: str, front_dir: str, garment: str) -> dict:
+    """版ごとの素材のパス。命名はbear3と同じ規則(<model>_front・overhead_<model>_front_marks)。"""
+    out, er = ROOT / "renders", ROOT / "er" / "out"
+    return {
+        "bear_front": out / front_dir / "front.png",
+        "design_overlay": er / f"{model}_front_overlay.png",
+        "design_er": er / f"{model}_front_er.json",
+        "morph": [out / front_dir / f"seam_morph_{k}.png" for k in range(5)],
+        "unfold": out / front_dir / "anim",
+        "overhead": out / f"overhead_{model}_front_marks.png",
+        "select_overlay": er / f"overhead_{model}_front_marks_overlay.png",
+        "select_er": er / f"overhead_{model}_front_marks_er.json",
+        "robot": out / f"anim_er_{model}_front_marks",
+        "out": out / "video" / f"final_{model}.mp4",
+        "garment": garment,
+        "pattern_view": None,  # 製図の形の型紙画面(あれば「平面に展開」の後に入れる)
+        "skip": set(),  # 外す区間
+    }
 
-# ERが服の線を設計する版(bear2)ができたら「Gemini Robotics-ERが服の線を設計 → プログラムで3Dに投影し平面に展開」に変える
-BEAR_CAPTION = "3Dのクマに服を合わせ、前身頃をプログラムで平面の型紙に展開"
+
+# 版: --versionで選ぶ。subjectはテロップでの呼び名
+VERSIONS = {
+    "bear3": {
+        "subject": "クマ",
+        "short": "クマ",
+        "assets": assets_for("bear3", "bear3", "タンクトップの前身頃"),
+        # ERの理由(英語)の日本語訳。原文はER出力の"reason"から読んで小さく添える
+        "reason_ja": {
+            "design_er": "首と腕の付け根を余裕をもって回り込む切り欠きを付け、胸とお腹に沿う前身頃にした",
+            "select_er": "外側の実線が服のパーツの裁断境界だから",
+        },
+    },
+    "dressform": {
+        "subject": "人台(1/2スケールのマネキン)",
+        "short": "人台",  # 長いと仕組みと見出しが折り返すので、短い呼び名も持つ
+        "assets": assets_for("dressform", "dressform", "服の前身頃") | {
+            "pattern_view": ROOT / "renders" / "dressform" / "pattern_view.png",
+            # 布に描いたのは製図の形に整えた型紙(drafted)
+            "select_overlay": ROOT / "er" / "out" / "overhead_dressform_front_drafted_marks_overlay.png",
+            "select_er": ROOT / "er" / "out" / "overhead_dressform_front_drafted_marks_er.json",
+            "robot": ROOT / "renders" / "anim_er_dressform_front_drafted_marks",
+            "skip": {"overhead"},  # 布の俯瞰は「おもちゃみたい」なので外す(ユーザーの評価)
+        },
+        "reason_ja": {
+            "design_er": "人台の胴の輪郭に沿って、くぼんだ襟ぐり・肩線・脇の線・脇の下・まっすぐな裾を持つ前身頃の輪郭を描いた",
+            "select_er": "布からパーツを切り離すには外側の白い実線に沿って切り、そのあと中心をつかんで持ち上げるべき",
+        },
+    },
+}
+ASSETS: dict = VERSIONS["bear3"]["assets"]
+REASON_JA: dict = VERSIONS["bear3"]["reason_ja"]
+SUBJECT = VERSIONS["bear3"]["subject"]
 
 PIPELINE_TEXT = (
-    "① Blender: 型紙を描いた布の俯瞰画像を作る\n"
-    "② Gemini Robotics-ER: 画像から切る線とつかむ点を推論\n"
-    "③ 画素 → 机の上の3D座標(m)に変換\n"
-    "④ MuJoCo: 刃先が線をなぞるPandaの関節角を計算(IK)\n"
-    "⑤ Blender: 関節角どおりにロボットを動かして描画"
+    "① Gemini Robotics-ER: {subject}の正面画像を見て、服(前身頃)の線を設計\n"
+    "② プログラム: 線を3Dの体に投影し、体型に合わせて微調整し、平面の型紙に展開\n"
+    "③ Blender: 型紙を布に描く(実線=裁つ線、破線=縫う線)\n"
+    "④ Gemini Robotics-ER: 線の意味を教えずに、布の画像から切る線を選ぶ\n"
+    "⑤ MuJoCo: 刃先が線をなぞるPandaの関節角を計算(IK)\n"
+    "⑥ Blender: 関節角どおりにPandaを動かして、布を切る様子を描画"
 )
 
 
@@ -58,6 +107,15 @@ class Timeline:
         self.background(length)
         s = self.ed.strips.new_image(path.stem, str(path), channel=2, frame_start=self.frame, fit_method="FIT")
         s.frame_final_duration = length
+
+    def slides(self, paths: list[Path], each: int) -> int:
+        """静止画を1枚ずつeachフレームずつ並べる。"""
+        self.background(each * len(paths))
+        for i, p in enumerate(paths):
+            s = self.ed.strips.new_image(p.stem, str(p), channel=2, frame_start=self.frame + i * each,
+                                         fit_method="FIT")
+            s.frame_final_duration = each
+        return each * len(paths)
 
     def sequence(self, folder: Path, hold: int = 0) -> int:
         frames = sorted(folder.glob("*.png"))
@@ -95,23 +153,30 @@ class Timeline:
         self.frame += length
 
 
-def er_reason(overlay: Path) -> str | None:
-    """overlay画像と同じ名前のER出力(<名前>_er.json)から理由の1文を取る。"""
-    er_json = overlay.with_name(overlay.name.replace("_overlay.png", "_er.json"))
-    if not er_json.exists():
+def reason_lines(key: str) -> str | None:
+    """ERの理由のテロップ: 日本語訳と原文。"""
+    path = ASSETS[key]
+    en = json.loads(path.read_text()).get("reason") if path.exists() else None
+    ja = REASON_JA.get(key)
+    if not (en or ja):
         return None
-    return json.loads(er_json.read_text()).get("reason")
+    return "\n".join(t for t in (f"ERの説明: {ja}" if ja else None, f"(原文) {en}" if en else None) if t)
 
 
 def main() -> None:
     argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
-    ap.add_argument("--robot", type=Path, default=ROBOT_TEMP, help="ロボットの切断の連番PNGのフォルダ")
-    ap.add_argument("--overlay", type=Path, default=OVERLAY_MAIN if OVERLAY_MAIN.exists() else OVERLAY_TEMP)
-    ap.add_argument("--out", type=Path, default=ROOT / "renders" / "video" / "final.mp4")
+    ap.add_argument("--version", default="bear3", choices=list(VERSIONS), help="素材の版(bear3・dressform)")
+    ap.add_argument("--robot", type=Path, default=None, help="ロボットの切断の連番PNGのフォルダ(既定は版の素材)")
+    ap.add_argument("--out", type=Path, default=None, help="出力(既定はrenders/video/final_<版>.mp4)")
     args = ap.parse_args(argv)
+    global ASSETS, REASON_JA, SUBJECT
+    ver = VERSIONS[args.version]
+    ASSETS, REASON_JA, SUBJECT = ver["assets"], ver["reason_ja"], ver["subject"]
+    short = ver["short"]
+    args.robot = args.robot or ASSETS["robot"]
+    args.out = args.out or ASSETS["out"]
     robot = args.robot if args.robot.is_absolute() else ROOT / args.robot
-    overlay = args.overlay if args.overlay.is_absolute() else ROOT / args.overlay
     out = args.out if args.out.is_absolute() else ROOT / args.out
 
     scene = bpy.context.scene
@@ -121,45 +186,76 @@ def main() -> None:
     r.fps = FPS
 
     tl = Timeline()
-    sec = {k: v * FPS for k, v in SECONDS.items()}
+    sec = {k: round(v * FPS) for k, v in SECONDS.items()}
 
-    # a. タイトル
+    # 1. タイトル
     tl.background(sec["title"])
-    tl.text("AIが型紙を読み、ロボットが布を切る", sec["title"], y=0.50, size=64, box=False)
+    tl.text("AIが服を設計し、ロボットが布を切る", sec["title"], y=0.50, size=64, box=False)
     tl.text("Gemini Robotics-ER × Franka Panda(シミュレーション)", sec["title"], y=0.40, size=30,
             bold=False, box=False, channel=4)
     tl.advance("タイトル", sec["title"])
 
-    # 仕組み(1分に届かせるための説明スライド)
+    # 2. 仕組み
     tl.background(sec["pipeline"])
-    tl.text("仕組み", sec["pipeline"], y=0.78, size=48, box=False)
-    tl.text(PIPELINE_TEXT, sec["pipeline"], y=0.22, size=32, bold=False, box=False, channel=4, align="LEFT")
+    tl.text("仕組み", sec["pipeline"], y=0.80, size=48, box=False)
+    tl.text(PIPELINE_TEXT.format(subject=short), sec["pipeline"], y=0.18, size=28, bold=False, box=False, channel=4, align="LEFT")
     tl.advance("仕組み", sec["pipeline"])
 
-    # b. クマの展開
-    n = tl.sequence(BEAR_DIR)
-    tl.text(BEAR_CAPTION, n)
-    tl.advance("クマの展開", n)
+    # 3. モデルの正面 → ERの設計線
+    tl.still(ASSETS["bear_front"], sec["bear_front"])
+    tl.text(f"この{SUBJECT}に合う服を、AIに設計させる", sec["bear_front"])
+    tl.advance("モデルの正面", sec["bear_front"])
+    tl.still(ASSETS["design_overlay"], sec["design"])
+    tl.text(f"Gemini Robotics-ERが{short}に合う{ASSETS['garment']}を設計", sec["design"], y=0.89)
+    design_reason = reason_lines("design_er")
+    if design_reason:
+        tl.text(design_reason, sec["design"], y=0.02, size=22, bold=False, channel=4)
+    tl.advance("ERが服を設計", sec["design"])
 
-    # c. 布の俯瞰
-    tl.still(OVERHEAD, sec["overhead"])
-    tl.text("型紙を布に描く(実線=裁つ線、破線=縫う線)", sec["overhead"])
-    tl.advance("布の俯瞰", sec["overhead"])
+    # 4. 投影と微調整
+    n = tl.slides(ASSETS["morph"], sec["morph_each"])
+    tl.text("プログラムで3Dに投影し、体型に合わせて微調整(赤→緑)", n)
+    tl.advance("投影と微調整", n)
 
-    # d. ERの推論
-    tl.still(overlay, sec["er"])
-    tl.text("Gemini Robotics-ERが切る線とつかむ点を推論", sec["er"], y=0.13)
-    reason = er_reason(overlay)
-    if reason:
-        tl.text(f"ERの説明: {reason}", sec["er"], y=0.03, size=24, bold=False, channel=4)
-    tl.advance("ERの推論", sec["er"])
+    # 5. 平面に展開
+    n = tl.sequence(ASSETS["unfold"])
+    tl.text("前身頃を平面の型紙に展開", n)
+    tl.advance("平面に展開", n)
 
-    # e. ロボットの切断(等倍。最後のコマを少し止める)
+    # 5b. 製図の形に整えた型紙画面(展開の最後のコマからクロスフェード)
+    if ASSETS["pattern_view"]:
+        n = sec["pattern"]
+        tl.background(n)
+        v = tl.ed.strips.new_image("pattern_view", str(ASSETS["pattern_view"]), channel=6,
+                                   frame_start=tl.frame - FADE, fit_method="FIT")
+        v.frame_final_duration = n + FADE
+        v.blend_alpha = 0.0
+        v.keyframe_insert("blend_alpha", frame=tl.frame - FADE)
+        v.blend_alpha = 1.0
+        v.keyframe_insert("blend_alpha", frame=tl.frame)
+        tl.text("平面に開き、製図の形に整えた前身頃の型紙(1/2スケール)", n, y=0.02, channel=7)
+        tl.advance("型紙画面", n)
+
+    # 6. 布の型紙
+    if "overhead" not in ASSETS["skip"]:
+        tl.still(ASSETS["overhead"], sec["overhead"])
+        tl.text("型紙を布に描く(実線=裁つ線、破線=縫う線)", sec["overhead"])
+        tl.advance("布の型紙", sec["overhead"])
+
+    # 7. ERが切る線を選ぶ
+    tl.still(ASSETS["select_overlay"], sec["select"])
+    tl.text("線の意味は教えずに切り抜きを指示 → ERは外側の実線を選んだ", sec["select"], y=0.89)
+    select_reason = reason_lines("select_er")
+    if select_reason:
+        tl.text(select_reason, sec["select"], y=0.02, size=22, bold=False, channel=4)
+    tl.advance("ERが切る線を選ぶ", sec["select"])
+
+    # 8. ロボットの切断(等倍。最後のコマを少し止める)
     n = tl.sequence(robot, hold=sec["robot_hold"])
-    tl.text("ERが推論した線に沿って、Pandaが刃でなぞって切る(等倍)", n)
+    tl.text("ERが選んだ線に沿って、Pandaが刃でなぞって切る(等倍)", n)
     tl.advance("ロボットの切断", n)
 
-    # f. エンディング
+    # 9. エンディング
     tl.background(sec["ending"])
     tl.text("開ループの限界と今後", sec["ending"], y=0.55, size=48, box=False)
     tl.text("最初の画像1枚で軌道を決めるため、布がずれても追従できない。\n"
@@ -180,12 +276,12 @@ def main() -> None:
     total = (tl.frame - 1) / FPS
     for name, s in tl.sections:
         print(f"  {name}: {s:.1f}s")
-    print(f"合計 {total:.1f}s  ER画像={overlay.relative_to(ROOT)}  理由={'あり' if reason else 'なし'}  "
-          f"ロボット={robot.relative_to(ROOT)}")
+    print(f"合計 {total:.1f}s  理由(設計/選択)={'あり' if design_reason else 'なし'}/"
+          f"{'あり' if select_reason else 'なし'}  ロボット={robot.relative_to(ROOT)}")
     if not 60 <= total <= 180:
         print(f"警告: 尺{total:.1f}sが課題の規定(1〜3分)から外れている")
     bpy.ops.render.render(animation=True)
-    print(f"wrote {out.relative_to(ROOT)}")
+    print(f"wrote {out.name}")
 
 
 if __name__ == "__main__":

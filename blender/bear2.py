@@ -38,6 +38,7 @@ OFFSET = 0.004  # 服を体から浮かせる距離(m)
 MESH_STEP_PX = 8.0  # 服のメッシュの細かさ(画素)
 ADJUST_POINTS = 200  # 微調整で線を取り直す点数
 SMOOTH_ITERS = 12
+RELAX_ITERS = 0  # 服のメッシュの内部の頂点を表面に沿って緩和する回数(0で行わない)
 CLEARANCE = 0.01  # 袖ぐり・襟ぐりを腕・首の付け根から離す距離(m)
 SIDE_DEG = 90  # 脇線の位置(正面から左右へ何度か)
 OBLIQUE = ((0.55, -0.85, 0.42), (0, 0, 0.14), 40)  # 斜めカメラ(位置, 注視点, レンズmm)
@@ -386,6 +387,21 @@ def garment_from_line(bvh: BVHTree, info: dict, line: list[Vector]) -> tuple[bpy
                 miss += 1
                 hit, normal = snap(bvh, o + d * (o - HEAD_C).length)
         co3.append(hit + normal * OFFSET)
+    if RELAX_ITERS:
+        # 内部の頂点を表面に沿って緩和する(正面からの光線が斜めに当たる脇で、三角形が細長く潰れるのを防ぐ)
+        fixed = {i for i, src in enumerate(orig) if any(k < nb for k in src)}
+        nbr: dict[int, set] = {}
+        for f in faces:
+            for a, b in zip(f, list(f[1:]) + [f[0]]):
+                nbr.setdefault(a, set()).add(b)
+                nbr.setdefault(b, set()).add(a)
+        for _ in range(RELAX_ITERS):
+            new = list(co3)
+            for i, ns in nbr.items():
+                if i not in fixed:
+                    hit, normal = snap(bvh, sum((co3[k] for k in ns), Vector()) / len(ns))
+                    new[i] = hit + normal * OFFSET
+            co3 = new
     mesh = bpy.data.meshes.new("Garment2")
     mesh.from_pydata(co3, [], [list(f) for f in faces])
     for p in mesh.polygons:
@@ -485,8 +501,9 @@ def pattern_from_er(bvh: BVHTree, info: dict, poly_px: list, source: str) -> tup
         "adjusted": [[round(c, 5) for c in p] for p in adjusted],
         "moved_max_mm": round(adj["moved_max_mm"], 2),
         "moved_mean_mm": round(adj["moved_mean_mm"], 2),
-        "rules": ["左右対称", f"脇線を正面から{SIDE_DEG}°へ", f"首・腕の付け根から{CLEARANCE * 100:.0f}cm以上",
-                  f"裾をz={HEM_MIN_Z * 100:.0f}cm以上", "表面に沿ってならす"],
+        "rules": adj.get("rules") or ["左右対称", f"脇線を正面から{SIDE_DEG}°へ",
+                                      f"首・腕の付け根から{CLEARANCE * 100:.0f}cm以上",
+                                      f"裾をz={HEM_MIN_Z * 100:.0f}cm以上", "表面に沿ってならす"],
     }, indent=1))
     garment, st = garment_from_line(bvh, info, adjusted)
     print(f"服のメッシュ: 頂点{st['verts']} 面{st['faces']}  体に当たらなかった点{st['miss']}")
@@ -546,7 +563,7 @@ def main() -> None:
     stage2(cam, bvh, info, poly_px, er_path.name, args.anim)
 
 
-def stage2(cam, bvh: BVHTree, info: dict, poly_px: list, source: str, anim: bool) -> None:
+def stage2(cam, bvh: BVHTree, info: dict, poly_px: list, source: str, anim: bool) -> tuple:
     """型紙を作り、動画用の画像(ERの線・体の上の線・色付けした範囲・平面に開く流れ)を描く。"""
     garment, flat, projected, adjusted = pattern_from_er(bvh, info, poly_px, source)
     garment.modifiers.new("Thick", "SOLIDIFY").thickness = 0.002
@@ -590,6 +607,7 @@ def stage2(cam, bvh: BVHTree, info: dict, poly_px: list, source: str, anim: bool
         print(f"連番: {(OUT / 'anim').relative_to(ROOT)}/ {len(steps)}コマ")
     print(f"wrote patterns/{PATTERN_NAME}.json, {OUT.relative_to(ROOT)}/"
           "{er_line,seam_front,seam_oblique,seam_morph_*,dressed,unfold_*}.png, seam_lines.json")
+    return garment, flat
 
 
 if __name__ == "__main__":

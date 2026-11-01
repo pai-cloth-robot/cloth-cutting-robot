@@ -138,6 +138,72 @@ def dashed(pts: list[tuple[float, float]], on: float = 0.008, off: float = 0.006
     return [ring[i : i + per_on] for i in range(0, len(ring) - per_on, per)]
 
 
+def fabric_material(color: tuple[float, float, float]) -> bpy.types.Material:
+    """綿の平織りらしい布: 縦横の糸の凹凸(バンプ)と、わずかな色むら・光沢(シーン)。"""
+    mat = bpy.data.materials.new("Fabric")
+    nt = mat.node_tree
+    n, link = nt.nodes, nt.links.new
+    bsdf = n["Principled BSDF"]
+    bsdf.inputs["Roughness"].default_value = 0.95
+    bsdf.inputs["Sheen Weight"].default_value = 0.4
+    coord = n.new("ShaderNodeTexCoord")
+    waves = []
+    for axis in ("X", "Y"):
+        w = n.new("ShaderNodeTexWave")
+        w.wave_type, w.bands_direction = "BANDS", axis
+        w.inputs["Scale"].default_value = 900.0  # 糸の間隔 約1mm(座標はオブジェクト基準・布は0.5m)
+        w.inputs["Distortion"].default_value = 2.0
+        link(coord.outputs["Object"], w.inputs["Vector"])
+        waves.append(w)
+    weave = n.new("ShaderNodeMath")
+    weave.operation = "MULTIPLY"
+    link(waves[0].outputs["Fac"], weave.inputs[0])
+    link(waves[1].outputs["Fac"], weave.inputs[1])
+    bump = n.new("ShaderNodeBump")
+    bump.inputs["Strength"].default_value = 0.25
+    link(weave.outputs["Value"], bump.inputs["Height"])
+    link(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    noise = n.new("ShaderNodeTexNoise")
+    noise.inputs["Scale"].default_value = 6.0
+    noise.inputs["Detail"].default_value = 6.0
+    link(coord.outputs["Object"], noise.inputs["Vector"])
+    ramp = n.new("ShaderNodeValToRGB")
+    ramp.color_ramp.elements[0].color = (*[c * 0.8 for c in color], 1.0)
+    ramp.color_ramp.elements[1].color = (*color, 1.0)
+    link(noise.outputs["Fac"], ramp.inputs["Fac"])
+    link(ramp.outputs["Color"], bsdf.inputs["Base Color"])
+    return mat
+
+
+def cutting_mat_material() -> bpy.types.Material:
+    """裁断用のカッティングマット: 深緑に1cm方眼の線。"""
+    mat = bpy.data.materials.new("CuttingMat")
+    nt = mat.node_tree
+    n, link = nt.nodes, nt.links.new
+    bsdf = n["Principled BSDF"]
+    bsdf.inputs["Roughness"].default_value = 0.7
+    coord = n.new("ShaderNodeTexCoord")
+    sep = n.new("ShaderNodeSeparateXYZ")
+    link(coord.outputs["Object"], sep.inputs["Vector"])
+    lines = []
+    for axis in ("X", "Y"):
+        mul = n.new("ShaderNodeMath"); mul.operation = "MULTIPLY"; mul.inputs[1].default_value = 100.0
+        link(sep.outputs[axis], mul.inputs[0])
+        fr = n.new("ShaderNodeMath"); fr.operation = "FRACT"
+        link(mul.outputs["Value"], fr.inputs[0])
+        lt = n.new("ShaderNodeMath"); lt.operation = "LESS_THAN"; lt.inputs[1].default_value = 0.035
+        link(fr.outputs["Value"], lt.inputs[0])
+        lines.append(lt)
+    mx = n.new("ShaderNodeMath"); mx.operation = "MAXIMUM"
+    link(lines[0].outputs["Value"], mx.inputs[0]); link(lines[1].outputs["Value"], mx.inputs[1])
+    mix = n.new("ShaderNodeMix"); mix.data_type = "RGBA"
+    mix.inputs["A"].default_value = (0.05, 0.16, 0.10, 1.0)
+    mix.inputs["B"].default_value = (0.25, 0.36, 0.28, 1.0)
+    link(mx.outputs["Value"], mix.inputs["Factor"])
+    link(mix.outputs["Result"], bsdf.inputs["Base Color"])
+    return mat
+
+
 def material(name: str, color: tuple[float, float, float], roughness: float) -> bpy.types.Material:
     mat = bpy.data.materials.new(name)
     bsdf = mat.node_tree.nodes["Principled BSDF"]
@@ -154,12 +220,19 @@ def build_scene(pattern: str, marks: bool = False) -> dict:
     table = bpy.context.object
     table.name = "Table"
     table.data.materials.append(material("Wood", (0.35, 0.22, 0.12), 0.6))
+    bpy.ops.mesh.primitive_plane_add(size=1.0, location=(0.5, 0.0, 0.0004))
+    mat_obj = bpy.context.object
+    mat_obj.name = "CuttingMat"
+    mat_obj.scale = (0.7, 0.9, 1.0)
+    mat_obj.data.materials.append(cutting_mat_material())
 
     cx, cy = CLOTH_CENTER
     bpy.ops.mesh.primitive_plane_add(size=CLOTH_SIZE, location=(cx, cy, CLOTH_Z))
     cloth = bpy.context.object
     cloth.name = "Cloth"
-    cloth.data.materials.append(material("Denim", (0.08, 0.14, 0.32), 0.9))
+    cloth.data.materials.append(fabric_material((0.16, 0.24, 0.42)))  # 紺の綿布
+    thick = cloth.modifiers.new("Thickness", "SOLIDIFY")  # 布の厚み1mmで端に影を出す
+    thick.thickness = 0.001
 
     pts = pattern_points(pattern)
     garment = pattern not in ("circle", "star", "wave")
@@ -167,25 +240,30 @@ def build_scene(pattern: str, marks: bool = False) -> dict:
         finished, pts = pts, offset(pts, SEAM_ALLOWANCE)  # 外側の裁ち切り線を切る
     # 服の型紙は首が画像の上(ロボットから遠い側=+x)に来るよう回す。星などは従来どおり
     to_world = (lambda x, y: (cx + y, cy - x)) if garment else (lambda x, y: (cx + x, cy + y))
-    chalk = material("Chalk", (0.92, 0.92, 0.88), 1.0)
-    add_curve("PatternLine", [[to_world(x, y) for x, y in pts]], True, chalk)
+    chalk = material("Chalk", (0.85, 0.85, 0.80), 1.0)
+    add_curve("PatternLine", [[to_world(x, y) for x, y in pts]], True, chalk, 0.0013)
     if marks:
-        add_curve("FinishedLine", [[to_world(x, y) for x, y in d] for d in dashed(finished)], False, chalk, 0.0012)
+        add_curve("FinishedLine", [[to_world(x, y) for x, y in d] for d in dashed(finished)], False, chalk, 0.0008)
         ys = [y for _, y in finished]
         mid, half = (max(ys) + min(ys)) / 2, (max(ys) - min(ys)) * 0.3  # 型紙の高さの6割の長さ
         top, bot = mid + half, mid - half
         arrow = [[(0, bot), (0, top)], [(-0.008, top - 0.012), (0, top), (0.008, top - 0.012)],
                  [(-0.008, bot + 0.012), (0, bot), (0.008, bot + 0.012)]]
-        add_curve("Grainline", [[to_world(x, y) for x, y in a] for a in arrow], False, chalk, 0.0012)
+        add_curve("Grainline", [[to_world(x, y) for x, y in a] for a in arrow], False, chalk, 0.0008)
     world_pts = [to_world(x, y) for x, y in pts]
 
     bpy.ops.object.light_add(type="AREA", location=(cx, cy, 1.5))
     light = bpy.context.object
-    light.data.energy = 40
+    light.data.energy = 18
     light.data.size = 1.0
+    bpy.ops.object.light_add(type="AREA", location=(cx - 0.6, cy + 0.6, 1.0))
+    fill = bpy.context.object  # 斜めからの弱い光で布の凹凸を見せる
+    fill.data.energy = 5
+    fill.data.size = 0.8
+    fill.rotation_euler = (math.radians(45), 0.0, math.radians(-135))
 
     world = bpy.data.worlds.new("World")
-    world.color = (0.05, 0.05, 0.05)
+    world.color = (0.04, 0.04, 0.04)
     scene.world = world
 
     bpy.ops.object.camera_add(location=(cx, cy, 1.0), rotation=(0.0, 0.0, -math.pi / 2))

@@ -26,6 +26,7 @@ HEM_Z = 0.04
 SHOULDER_Z = 0.168
 TUBE_R = 0.12
 OUTLINE_POINTS = 160
+UNWRAP_METHOD = "CONFORMAL"  # UV展開の方法(人台ではMINIMUM_STRETCHも使う)
 MAX_SIZE = 0.30
 
 
@@ -156,7 +157,7 @@ def unwrap(obj: bpy.types.Object) -> list[Vector]:
     obj.select_set(True)
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_all(action="SELECT")
-    bpy.ops.uv.unwrap(method="CONFORMAL", margin=0.0)
+    bpy.ops.uv.unwrap(method=UNWRAP_METHOD, margin=0.0)
     bpy.ops.object.mode_set(mode="OBJECT")
     uv = [None] * len(obj.data.vertices)
     layer = obj.data.uv_layers.active.data

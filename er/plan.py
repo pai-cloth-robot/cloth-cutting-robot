@@ -78,6 +78,31 @@ The points are in [y, x] format normalized to 0-1000.
 """
 
 
+# 1/2スケールの人台(ドレスフォーム)の正面画像に、袖なしトップスの前身頃を設計させる
+PROMPT_DESIGN_FORM = """
+The image is a front view of a half-scale dress form (a tailor's mannequin
+torso without head and arms), used for pattern making.
+We want to sew a sleeveless top that fits this dress form.
+
+1. Design the front bodice of the top on this image: draw its outline as a
+   closed loop of 60 to 90 points ordered along the outline. Follow how a
+   pattern maker would place the seams:
+   - Shoulder seams along the top of each shoulder, from the base of the neck
+     out to near the shoulder tip.
+   - A neckline around the base of the neck, scooped lower at the front center.
+   - Armholes that follow the edge of the arm openings down to the underarm.
+   - Side seams running straight down the sides of the torso.
+   - A hem at about hip level.
+2. Point to one grasp point inside the bodice.
+
+Answer in this JSON format only:
+{"trajectory": [{"step": 1, "point": [y, x]}, ...],
+ "grasp": {"point": [y, x], "label": "grasp"},
+ "reason": "<one sentence: how you fitted the bodice to the dress form>"}
+The points are in [y, x] format normalized to 0-1000.
+"""
+
+
 def api_key() -> str:
     return subprocess.run(
         ["security", "find-generic-password", "-s", "pai-final-cloth-gemini", "-a", "gemini-api-key", "-w"],
@@ -110,7 +135,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("image", type=Path)
     ap.add_argument("--thinking", default="high", choices=["low", "medium", "high"])
-    ap.add_argument("--task", default="line", choices=["line", "garment", "design"])
+    ap.add_argument("--task", default="line", choices=["line", "garment", "design", "design_form"])
     ap.add_argument("--name", help="出力名(既定は画像のファイル名)")
     args = ap.parse_args()
 
@@ -121,7 +146,7 @@ def main() -> None:
         model=MODEL,
         input=[
             {"type": "image", "uri": uploaded.uri, "mime_type": uploaded.mime_type},
-            {"type": "text", "text": {"line": PROMPT, "garment": PROMPT_GARMENT, "design": PROMPT_DESIGN}[args.task]},
+            {"type": "text", "text": {"line": PROMPT, "garment": PROMPT_GARMENT, "design": PROMPT_DESIGN, "design_form": PROMPT_DESIGN_FORM}[args.task]},
         ],
         generation_config={"thinking_level": args.thinking},
     )
