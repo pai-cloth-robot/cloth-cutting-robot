@@ -17,3 +17,12 @@ docs/report/
 renders/
 # 作業用の指示書
 CLAUDE.md
+# 提出は人台の前身頃。初期の星型・クマの素材とコードは手元にだけ置く
+er/out/*
+!er/out/dressform_front_er.json
+!er/out/dressform_front_overlay.png
+!er/out/dressform_front_raw.txt
+!er/out/overhead_dressform_front_drafted_marks_*
+patterns/bear*.json
+blender/bear3.py
+blender/compose_v1.py
