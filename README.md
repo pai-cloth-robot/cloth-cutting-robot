@@ -10,7 +10,7 @@ Gemini Robotics-ERが1/2スケールの人台の正面画像から服の前身�
 
 ## 環境
 
-- macOS(Apple M2で確認)。文字の描画に`/System/Library/Fonts`のヒラギノを使います
+- macOS(Apple M2で確認)
 - Blender 5.2.3(`blender -b --factory-startup -P <script> -- <引数>`で実行)
 - Python 3.13 + [uv](https://docs.astral.sh/uv/)。`uv sync`で依存(google-genai・mujoco・numpy・pillow)を入れます
 - Gemini APIキー: macOSのキーチェーンから読みます。次のコマンドで登録します(`-w`に値を書かずに対話入力にすると、履歴に残りません)
