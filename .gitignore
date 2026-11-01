@@ -13,3 +13,7 @@ renders/*/anim/
 # 計画とレポート材料はリポジトリに入れない(レポートPDFは別に提出)
 docs/plan/
 docs/report/
+# 実行時に生成する画像(scene.py・bear*.py・dressform.pyで作り直せる)
+renders/
+# 作業用の指示書
+CLAUDE.md
