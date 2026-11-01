@@ -1,5 +1,7 @@
 """服を着たクマのぬいぐるみを作り、服の前身頃をUV展開して平面の型紙にする。
 
+人台版(blender/dressform.py)が部品として使う。単体実行は初期の試作用で、その素材はリポジトリに同梱していない。
+
 実行: Blender -b --factory-startup -P blender/bear.py [-- --anim]
 出力:
     patterns/bear_front.json   前身頃の輪郭(m、重心が原点、首が+y、反時計回り)

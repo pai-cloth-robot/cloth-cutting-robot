@@ -1,6 +1,6 @@
 """シーン・Panda・切れ目の演出をまとめ、斜め上のカメラ(Cam_Wide)でレンダリングする。
 
-実行: Blender -b --factory-startup -P blender/animate.py -- --pattern star --poses kin/out/star_poses.json [--frames 0 300 607 | --all]
+実行: Blender -b --factory-startup -P blender/animate.py -- --pattern dressform_front_drafted --marks --poses kin/out/er_dressform_front_drafted_marks_poses.json [--frames 0 300 607 | --all]
 出力: renders/anim_<name>/<frame>.png
 切れ目は型紙の正解でなく、刃先が実際に通った軌跡(=ERの点列をIKでなぞった結果)から作る。
 """
@@ -225,7 +225,7 @@ def add_piece(blade_tip: list[list[float]], trace: tuple[int, int], grasp: tuple
 def main() -> None:
     argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pattern", default="star")
+    ap.add_argument("--pattern", default="dressform_front_drafted")
     ap.add_argument("--marks", action="store_true")
     ap.add_argument("--poses", type=Path, required=True)
     ap.add_argument("--frames", type=int, nargs="*", default=[0, 200, 400, 607])

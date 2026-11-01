@@ -1,6 +1,6 @@
 """ERが返した画素座標を、カメラからの光線と布の面(z=一定)の交点で3D点に直す。
 
-実行: uv run python er/to3d.py er/out/overhead_star_er.json renders/overhead_star.json
+実行: uv run python er/to3d.py er/out/overhead_dressform_front_drafted_marks_er.json renders/overhead_dressform_front_drafted_marks.json
 出力: er/out/<stem>_points3d.json  {"points": [[x,y,z], ...], "closed": true, "grasp": [x,y,z]}
       (kin/ik.pyの入力形式)
 """

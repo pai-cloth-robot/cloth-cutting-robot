@@ -1,6 +1,8 @@
 """俯瞰画像をGemini Robotics-ERに渡し、型紙の線に沿って切る軌道とつかむ点を得る。
 
-実行: uv run python er/plan.py renders/overhead_star.png
+実行: uv run python er/plan.py renders/dressform/front.png --task design_form --name dressform_front
+      uv run python er/plan.py renders/overhead_dressform_front_drafted_marks.png --task garment
+--task line/designは初期の試作(星型・クマ)用
 出力: er/out/<stem>_er.json(ERの生出力と画素座標) / er/out/<stem>_overlay.png(重ね描き)
 APIキーはmacOSキーチェーン(service=pai-final-cloth-gemini)から読み、表示しない。
 """

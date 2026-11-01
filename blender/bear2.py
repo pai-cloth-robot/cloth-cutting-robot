@@ -1,5 +1,7 @@
 """ぬいぐるみ風のクマを作り、ERが正面画像に描いた服の線を体に投影して前身頃の型紙にする。
 
+人台版(blender/dressform.py)が部品として使う。単体実行は初期の試作用で、その素材はリポジトリに同梱していない。
+
 段階1(ERの前): Blender -b --factory-startup -P blender/bear2.py -- --shoot
     renders/bear2/front.png / front.json   服なしのクマの正面画像とカメラ情報(scene.pyと同じ形式)
     renders/bear2/test_er.json             動作確認用の手作りの多角形(ERの代わり)
@@ -31,7 +33,7 @@ import bear  # noqa: E402  (輪郭の処理を共用する)
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "renders" / "bear2"
-PATTERN_NAME = "bear2_front"  # bear3などから使うときは、OUTとあわせて差し替える
+PATTERN_NAME = "bear2_front"  # dressform.pyから使うときは、OUTとあわせて差し替える
 RES = 1024
 MB_K = 0.574  # メタボール(しきい値0.6・硬さ2)の面の半径 / 要素の半径
 OFFSET = 0.004  # 服を体から浮かせる距離(m)
