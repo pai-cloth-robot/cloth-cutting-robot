@@ -34,6 +34,50 @@ The points are in [y, x] format normalized to 0-1000.
 """
 
 
+# 服の型紙用: 線の種類(実線・破線・矢印)は伝えず、どの線で切るかをERに判断させる
+PROMPT_GARMENT = """
+The image is a top-down view of a cloth on a table. A sewing pattern for a
+garment piece is drawn on the cloth in chalk. A robot will cut out this
+garment piece from the cloth, the way a tailor would.
+
+1. Plan the cutting trajectory as a closed loop, with 50 to 80 points ordered
+   along the line the robot should cut, starting anywhere on it.
+2. Point to one grasp point inside the piece, where a gripper should pick up
+   the cut-out piece.
+
+Answer in this JSON format only:
+{"trajectory": [{"step": 1, "point": [y, x]}, ...],
+ "grasp": {"point": [y, x], "label": "grasp"},
+ "reason": "<one sentence: which line you chose to cut and why>"}
+The points are in [y, x] format normalized to 0-1000.
+"""
+
+
+# クマの正面画像に、体に合う服(タンクトップ)の前身頃の輪郭をERに設計させる
+PROMPT_DESIGN = """
+The image is a front view of a 3D model of a plush teddy bear.
+We want to sew a sleeveless tank top that fits this bear.
+
+1. Design the front panel of the tank top on this image: draw its outline as
+   a closed loop of 60 to 90 points ordered along the outline. It must have a
+   clear tank-top shape, not a rectangle or trapezoid:
+   - Two narrow shoulder straps at the base of the neck. Each strap is about
+     one sixth of the panel width.
+   - A deep U-shaped neckline between the straps. Its lowest point is about one
+     third of the way down from the strap tops to the hem.
+   - Two deep, rounded armholes. Each one curves from the outer edge of a strap,
+     under the arm, to the side seam, reaching about 40% of the way down.
+   - Straight side seams down the torso, and a hem just above the legs.
+2. Point to one grasp point inside the panel.
+
+Answer in this JSON format only:
+{"trajectory": [{"step": 1, "point": [y, x]}, ...],
+ "grasp": {"point": [y, x], "label": "grasp"},
+ "reason": "<one sentence: how you fitted the panel to the bear's body>"}
+The points are in [y, x] format normalized to 0-1000.
+"""
+
+
 def api_key() -> str:
     return subprocess.run(
         ["security", "find-generic-password", "-s", "pai-final-cloth-gemini", "-a", "gemini-api-key", "-w"],
@@ -66,6 +110,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("image", type=Path)
     ap.add_argument("--thinking", default="high", choices=["low", "medium", "high"])
+    ap.add_argument("--task", default="line", choices=["line", "garment", "design"])
+    ap.add_argument("--name", help="出力名(既定は画像のファイル名)")
     args = ap.parse_args()
 
     client = genai.Client(api_key=api_key())
@@ -75,17 +121,26 @@ def main() -> None:
         model=MODEL,
         input=[
             {"type": "image", "uri": uploaded.uri, "mime_type": uploaded.mime_type},
-            {"type": "text", "text": PROMPT},
+            {"type": "text", "text": {"line": PROMPT, "garment": PROMPT_GARMENT, "design": PROMPT_DESIGN}[args.task]},
         ],
         generation_config={"thinking_level": args.thinking},
     )
     elapsed = time.time() - t0
+    out_dir = ROOT / "er" / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = args.name or args.image.stem
+    (out_dir / f"{stem}_raw.txt").write_text(res.output_text)  # 解析に失敗しても応答を残す
     out = parse_json(res.output_text)
 
     im = Image.open(args.image).convert("RGB")
     w, h = im.size
-    traj_px = [to_px(s["point"], w, h) for s in sorted(out["trajectory"], key=lambda s: s["step"])]
-    grasp_px = to_px(out["grasp"]["point"], w, h)
+    # ERは指示どおりの{"step","point"}でなく、[y, x]の並びだけを返すことがある
+    steps = out["trajectory"]
+    if steps and isinstance(steps[0], dict):
+        steps = [s["point"] for s in sorted(steps, key=lambda s: s.get("step", 0))]
+    traj_px = [to_px(p, w, h) for p in steps]
+    grasp = out["grasp"]
+    grasp_px = to_px(grasp["point"] if isinstance(grasp, dict) else grasp, w, h)
 
     d = ImageDraw.Draw(im)
     d.line(traj_px + traj_px[:1], fill=(255, 60, 0), width=3)
@@ -94,18 +149,17 @@ def main() -> None:
     gx, gy = grasp_px
     d.ellipse([gx - 9, gy - 9, gx + 9, gy + 9], outline=(0, 255, 80), width=4)
 
-    result = {"model": MODEL, "thinking": args.thinking, "elapsed_s": round(elapsed, 1),
+    result = {"model": MODEL, "task": args.task, "reason": out.get("reason"), "thinking": args.thinking, "elapsed_s": round(elapsed, 1),
               "raw": res.output_text, "trajectory_px": traj_px, "grasp_px": grasp_px}
     gt = args.image.with_suffix(".json")
-    if gt.exists():
-        result["error_vs_pattern"] = line_error_mm(traj_px, json.loads(gt.read_text()))
+    if gt.exists() and "pattern_px" in (gt_info := json.loads(gt.read_text())):
+        result["error_vs_pattern"] = line_error_mm(traj_px, gt_info)
 
-    out_dir = ROOT / "er" / "out"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stem = args.image.stem
     im.save(out_dir / f"{stem}_overlay.png")
     (out_dir / f"{stem}_er.json").write_text(json.dumps(result, indent=1, ensure_ascii=False))
     print(f"{stem}: {len(traj_px)} points, {elapsed:.1f}s, error={result.get('error_vs_pattern')}")
+    if out.get("reason"):
+        print(f"reason: {out['reason']}")
 
 
 if __name__ == "__main__":

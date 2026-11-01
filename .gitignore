@@ -8,3 +8,5 @@ kin/out/
 renders/anim_*/
 renders/robot_*.png
 __pycache__/
+renders/video/
+renders/*/anim/

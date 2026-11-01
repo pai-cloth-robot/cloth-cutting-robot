@@ -6,6 +6,7 @@
 """
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -35,24 +36,31 @@ def add_cut(blade_tip: list[list[float]], trace: tuple[int, int]) -> bpy.types.O
     bpy.context.scene.collection.objects.link(cut)
     cut.data.materials.append(material("CutGap", (0.01, 0.01, 0.015), 1.0))
 
-    curve.bevel_factor_end = 0.0
-    curve.keyframe_insert("bevel_factor_end", frame=t0)
-    curve.bevel_factor_end = 1.0
-    curve.keyframe_insert("bevel_factor_end", frame=t1)
+    # 2点だけのキーフレームはBlender既定の補間で中盤が速くなり、切れ目が刃を追い越す。
+    # 毎フレーム、刃先がそこまでに進んだ道のりの割合を打つ。
+    seg = [math.dist(a[:2], b[:2]) for a, b in zip(pts, pts[1:])]
+    total = sum(seg)
+    done = 0.0
+    for i, f in enumerate(range(t0, t1 + 1)):
+        if i > 0:
+            done += seg[i - 1]
+        curve.bevel_factor_end = done / total
+        curve.keyframe_insert("bevel_factor_end", frame=f)
     return cut
 
 
 def main() -> None:
     argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pattern", default="star", choices=["circle", "star", "wave"])
+    ap.add_argument("--pattern", default="star")
+    ap.add_argument("--marks", action="store_true")
     ap.add_argument("--poses", type=Path, required=True)
     ap.add_argument("--frames", type=int, nargs="*", default=[0, 200, 400, 607])
     ap.add_argument("--all", action="store_true", help="全フレームを書き出す")
     ap.add_argument("--res", type=int, nargs=2, default=[1280, 720])
     args = ap.parse_args(argv)
 
-    build_scene(args.pattern)
+    build_scene(args.pattern, args.marks)
     info = add_robot(ROOT / args.poses)
     add_cut(info["blade_tip"], info["trace_frames"])
 
