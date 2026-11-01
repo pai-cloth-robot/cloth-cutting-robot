@@ -37,7 +37,7 @@ The points are in [y, x] format normalized to 0-1000.
 # 服の型紙用: 線の種類(実線・破線・矢印)は伝えず、どの線で切るかをERに判断させる
 PROMPT_GARMENT = """
 The image is a top-down view of a cloth on a table. A sewing pattern for a
-garment piece is drawn on the cloth in chalk. A robot will cut out this
+garment piece is drawn on the cloth. A robot will cut out this
 garment piece from the cloth, the way a tailor would.
 
 1. Plan the cutting trajectory as a closed loop, with 50 to 80 points ordered
@@ -91,8 +91,11 @@ We want to sew a sleeveless top that fits this dress form.
      out to near the shoulder tip.
    - A neckline around the base of the neck, scooped lower at the front center.
    - Armholes that follow the edge of the arm openings down to the underarm.
-   - Side seams running straight down the sides of the torso.
-   - A hem at about hip level.
+   - Side seams that run exactly along the left and right outer edges
+     (silhouette) of the torso, from the underarm down to the hem, following
+     the curve of the waist. The bodice must cover the full width of the torso
+     at every height; do not draw the side seams inside the silhouette.
+   - A hem at about hip level, spanning the full width of the torso.
 2. Point to one grasp point inside the bodice.
 
 Answer in this JSON format only:
@@ -139,6 +142,7 @@ def main() -> None:
     ap.add_argument("--name", help="出力名(既定は画像のファイル名)")
     args = ap.parse_args()
 
+    prompt = {"line": PROMPT, "garment": PROMPT_GARMENT, "design": PROMPT_DESIGN, "design_form": PROMPT_DESIGN_FORM}[args.task]
     client = genai.Client(api_key=api_key())
     uploaded = client.files.upload(file=str(args.image))
     t0 = time.time()
@@ -146,7 +150,7 @@ def main() -> None:
         model=MODEL,
         input=[
             {"type": "image", "uri": uploaded.uri, "mime_type": uploaded.mime_type},
-            {"type": "text", "text": {"line": PROMPT, "garment": PROMPT_GARMENT, "design": PROMPT_DESIGN, "design_form": PROMPT_DESIGN_FORM}[args.task]},
+            {"type": "text", "text": prompt},
         ],
         generation_config={"thinking_level": args.thinking},
     )
@@ -174,7 +178,7 @@ def main() -> None:
     gx, gy = grasp_px
     d.ellipse([gx - 9, gy - 9, gx + 9, gy + 9], outline=(0, 255, 80), width=4)
 
-    result = {"model": MODEL, "task": args.task, "reason": out.get("reason"), "thinking": args.thinking, "elapsed_s": round(elapsed, 1),
+    result = {"model": MODEL, "task": args.task, "prompt": prompt.strip(), "reason": out.get("reason"), "thinking": args.thinking, "elapsed_s": round(elapsed, 1),
               "raw": res.output_text, "trajectory_px": traj_px, "grasp_px": grasp_px}
     gt = args.image.with_suffix(".json")
     if gt.exists() and "pattern_px" in (gt_info := json.loads(gt.read_text())):

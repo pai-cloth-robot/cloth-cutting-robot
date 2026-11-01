@@ -1,9 +1,10 @@
 """刃先が3D点列をなぞるPandaの姿勢をMuJoCoのIKで求め、Blender用に書き出す。
 
 使い方:
-    uv run python kin/ik.py <points.json> [--name NAME] [--key pattern_world] [--render]
+    uv run python kin/ik.py <points.json> [--name NAME] [--key pattern_world] [--grasp] [--render]
 
 入力JSON: {"points": [[x,y,z], ...], "closed": true}(--keyで別のキーの点列も読める)
+    --grasp時は "grasp": [x,y,z] も読み、なぞったあと、その点をつかんで持ち上げて終える
 出力:
     kin/out/<name>_poses.json  フレームごとの可視geomの位置・回転と刃先位置
     kin/out/meshes/<mesh>.obj  コンパイル後のメッシュ(geomのpos/quatをそのまま当てられる)
@@ -28,6 +29,8 @@ TRACE_SPEED = 0.05  # m/s
 HOVER = 0.05  # 始点の上空の高さ(m)
 # 刃先: hand座標系のz軸上。閉じた指先(z=0.1123)から2cm先に刃が出ている想定
 BLADE_TIP_LOCAL = (0.0, 0.0, 0.1323)
+FINGER_TIP_Z = 0.1123  # 閉じた指先のhand座標系z
+GRASP_LIFT = 0.15  # つかんだあと持ち上げる高さ(m)
 ARM_DOF = 7
 
 
@@ -105,8 +108,14 @@ def solve_ik(
     return q
 
 
-def build_targets(path: np.ndarray, home_tip: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """ホーム→始点上空→下ろす→なぞる→持ち上げる→ホーム。(目標点列, なぞり中か)を返す。"""
+def build_targets(
+    path: np.ndarray, home_tip: np.ndarray, grasp: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray, int | None]:
+    """ホーム→始点上空→下ろす→なぞる→持ち上げる→ホーム。
+
+    graspを渡すと、持ち上げたあとホームへ戻らず、つかむ点の上→指先が布に触れる高さ
+    →GRASP_LIFT持ち上げる→1.5秒静止で終える。(目標点列, なぞり中か, 触れたフレーム)を返す。
+    """
     start, end = path[0], path[-1]
     above_start = start + [0, 0, HOVER]
     above_end = end + [0, 0, HOVER]
@@ -117,12 +126,31 @@ def build_targets(path: np.ndarray, home_tip: np.ndarray) -> tuple[np.ndarray, n
         (smooth_line(above_start, start, 1.0), False),
         (path[1:], True),
         (smooth_line(end, above_end, 1.0), False),
-        (smooth_line(above_end, home_tip, 2.0), False),
-        (np.repeat(home_tip[None], FPS // 2, axis=0), False),
     ]
+    touch_frame = None
+    if grasp is None:
+        parts += [
+            (smooth_line(above_end, home_tip, 2.0), False),
+            (np.repeat(home_tip[None], FPS // 2, axis=0), False),
+        ]
+    else:
+        # 刃先siteは指先よりhandのz方向(鉛直下)に先へ出ているので、その分だけ下を狙う
+        touch = grasp - [0, 0, BLADE_TIP_LOCAL[2] - FINGER_TIP_Z]
+        above_grasp = touch + [0, 0, HOVER]
+        lifted = touch + [0, 0, GRASP_LIFT]
+        parts += [
+            (smooth_line(above_end, above_grasp, 1.5), False),
+            (smooth_line(above_grasp, touch, 1.0), False),
+        ]
+        touch_frame = sum(len(p) for p, _ in parts) - 1
+        parts += [
+            (np.repeat(touch[None], FPS // 2, axis=0), False),  # つかむ間
+            (smooth_line(touch, lifted, 1.5), False),
+            (np.repeat(lifted[None], int(FPS * 1.5), axis=0), False),
+        ]
     targets = np.vstack([p for p, _ in parts])
     tracing = np.concatenate([np.full(len(p), t) for p, t in parts])
-    return targets, tracing
+    return targets, tracing, touch_frame
 
 
 def geom_names(model: mujoco.MjModel) -> dict[int, str]:
@@ -226,6 +254,7 @@ def main() -> None:
     ap.add_argument("points_json", type=Path)
     ap.add_argument("--key", default="points", help="点列のキー(renders/*.jsonならpattern_world)")
     ap.add_argument("--name", default=None, help="出力名(既定は入力ファイル名)")
+    ap.add_argument("--grasp", action="store_true", help="なぞったあと\"grasp\"の点をつかんで持ち上げる")
     ap.add_argument("--render", action="store_true", help="確認用PNGを書く")
     args = ap.parse_args()
 
@@ -245,7 +274,8 @@ def main() -> None:
     assert np.allclose(target_mat[:, 2], [0, 0, -1], atol=1e-3), "ホーム姿勢で刃が下向きでない"
 
     path = resample_closed(raw, TRACE_SPEED / FPS, closed)
-    targets, tracing = build_targets(path, home_tip)
+    grasp = np.asarray(src["grasp"], dtype=float) if args.grasp else None
+    targets, tracing, touch_frame = build_targets(path, home_tip, grasp)
 
     names = geom_names(model)
     q = q_home.copy()
@@ -273,6 +303,8 @@ def main() -> None:
         "trace_frames": [int(np.argmax(tracing)), int(len(tracing) - 1 - np.argmax(tracing[::-1]))],
         "frames": frames,
     }
+    if touch_frame is not None:
+        out["grasp_frames"] = [touch_frame, len(frames) - 1]
     pose_path = OUT_DIR / f"{name}_poses.json"
     pose_path.write_text(json.dumps(out))
 
@@ -282,6 +314,11 @@ def main() -> None:
     print(f"frames={len(frames)} ({len(frames) / FPS:.1f}s)  trace={len(errs)}フレーム")
     print(f"刃先誤差(なぞり中): 最大 {errs_mm.max():.4f} mm / 平均 {errs_mm.mean():.4f} mm")
     print(f"刃の傾き(鉛直から): 最大 {tilt:.4f}°  1フレームの関節変化: 最大 {np.degrees(dq):.3f}°")
+    if touch_frame is not None:
+        g_err = [np.linalg.norm(np.asarray(frames[i]["blade_tip"]) - targets[i]) * 1000
+                 for i in out["grasp_frames"]]
+        print(f"grasp_frames={out['grasp_frames']}  刃先誤差(触れた時/最後): "
+              f"{g_err[0]:.4f} / {g_err[1]:.4f} mm")
     print(f"出力: {pose_path.relative_to(ROOT)}  meshes={len({model.geom_dataid[g] for g in names})}")
 
     if args.render:

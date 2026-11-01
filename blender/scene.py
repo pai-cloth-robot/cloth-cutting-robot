@@ -34,7 +34,15 @@ def pattern_points(name: str, n: int = 120) -> list[tuple[float, float]]:
         return resample(bodice_outline(), 160)
     src = ROOT / "patterns" / f"{name}.json"
     if src.exists():
-        return resample([tuple(p) for p in json.loads(src.read_text())["outline"]], 160)
+        data = json.loads(src.read_text())
+        outline = [tuple(p) for p in data["outline"]]
+        if "vertices" in data:  # 製図した型紙は角を残して取り直す
+            corners = []
+            for key in ("shoulder_tip", "side_neck", "underarm", "waist_side", "hem_corner"):
+                x, y = data["vertices"][key]
+                corners += [(x, y), (-x, y)]
+            return corner_resample(outline, corners, 160)
+        return resample(outline, 160)
     pts = []
     for i in range(n):
         t = 2 * math.pi * i / n
@@ -104,14 +112,50 @@ def resample(pts: list[tuple[float, float]], n: int) -> list[tuple[float, float]
     return out
 
 
+def corner_resample(pts, corners, n: int) -> list[tuple[float, float]]:
+    """閉じた折れ線の角(corners)を正確に残し、角と角の間を道のりで等間隔に取り直す。"""
+    ring = ccw(list(pts))
+    idx = []
+    for c in corners:
+        i = min(range(len(ring)), key=lambda k: math.dist(ring[k], c))
+        ring[i] = c
+        idx.append(i)
+    idx = sorted(set(idx))
+    total = sum(math.dist(a, b) for a, b in zip(ring, ring[1:] + ring[:1]))
+    out = []
+    for a, b in zip(idx, idx[1:] + idx[:1]):
+        seg = ring[a : b + 1] if b > a else ring[a:] + ring[: b + 1]
+        lens = [math.dist(u, v) for u, v in zip(seg, seg[1:])]
+        L = sum(lens)
+        m = max(1, round(n * L / total))
+        k, acc = 0, 0.0
+        for j in range(m):  # 始点(角)を含み、終点(次の角)は次の区間で出す
+            s_ = L * j / m
+            while k < len(lens) - 1 and acc + lens[k] < s_:
+                acc += lens[k]
+                k += 1
+            t = (s_ - acc) / lens[k] if lens[k] else 0.0
+            (x0, y0), (x1, y1) = seg[k], seg[k + 1]
+            out.append((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
+    return out
+
+
 def offset(pts: list[tuple[float, float]], d: float) -> list[tuple[float, float]]:
-    """反時計回りの閉じた線を外側へdだけずらす(頂点ごとに前後の辺の法線を平均)。"""
+    """反時計回りの閉じた線を外側へdだけずらす。前後の辺をそれぞれdずらした線の交点に置くので(マイター)、
+    角は尖ったまま残る(縫い代の線を出来上がり線と平行にする型紙の描き方)。"""
     out = []
     for i, (x, y) in enumerate(pts):
         (xa, ya), (xb, yb) = pts[i - 1], pts[(i + 1) % len(pts)]
-        nx, ny = yb - ya, -(xb - xa)
-        L = math.hypot(nx, ny) or 1.0
-        out.append((x + d * nx / L, y + d * ny / L))
+        normals = []
+        for dx, dy in ((x - xa, y - ya), (xb - x, yb - y)):
+            L = math.hypot(dx, dy) or 1.0
+            normals.append((dy / L, -dx / L))
+        (n1x, n1y), (n2x, n2y) = normals
+        bx, by = n1x + n2x, n1y + n2y
+        B = math.hypot(bx, by) or 1.0
+        bx, by = bx / B, by / B
+        cos_half = max(bx * n1x + by * n1y, 1 / 3)  # 鋭い角で伸びすぎないよう3dまで
+        out.append((x + d * bx / cos_half, y + d * by / cos_half))
     return out
 
 
@@ -230,7 +274,7 @@ def build_scene(pattern: str, marks: bool = False) -> dict:
     bpy.ops.mesh.primitive_plane_add(size=CLOTH_SIZE, location=(cx, cy, CLOTH_Z))
     cloth = bpy.context.object
     cloth.name = "Cloth"
-    cloth.data.materials.append(fabric_material((0.16, 0.24, 0.42)))  # 紺の綿布
+    cloth.data.materials.append(fabric_material((0.80, 0.72, 0.58)))  # 生成りのコットン(シーチング)
     thick = cloth.modifiers.new("Thickness", "SOLIDIFY")  # 布の厚み1mmで端に影を出す
     thick.thickness = 0.001
 
@@ -240,7 +284,7 @@ def build_scene(pattern: str, marks: bool = False) -> dict:
         finished, pts = pts, offset(pts, SEAM_ALLOWANCE)  # 外側の裁ち切り線を切る
     # 服の型紙は首が画像の上(ロボットから遠い側=+x)に来るよう回す。星などは従来どおり
     to_world = (lambda x, y: (cx + y, cy - x)) if garment else (lambda x, y: (cx + x, cy + y))
-    chalk = material("Chalk", (0.85, 0.85, 0.80), 1.0)
+    chalk = material("Pencil", (0.10, 0.10, 0.12), 0.8)  # ベージュの布に濃い色の細い線
     add_curve("PatternLine", [[to_world(x, y) for x, y in pts]], True, chalk, 0.0013)
     if marks:
         add_curve("FinishedLine", [[to_world(x, y) for x, y in d] for d in dashed(finished)], False, chalk, 0.0008)

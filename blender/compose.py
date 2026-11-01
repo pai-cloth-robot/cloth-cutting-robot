@@ -73,6 +73,36 @@ VERSIONS = {
             "design_er": "人台の胴の輪郭に沿って、くぼんだ襟ぐり・肩線・脇の線・脇の下・まっすぐな裾を持つ前身頃の輪郭を描いた",
             "select_er": "布からパーツを切り離すには外側の白い実線に沿って切り、そのあと中心をつかんで持ち上げるべき",
         },
+        # ERの区間(設計・切る線の選択)は、理由の代わりにERへ与えたプロンプトの全文(_er.jsonの"prompt")を右に出す
+        "show_prompt": True,
+        "seconds": {"design": 11, "select": 11, "robot_hold": 2, "ending": 9},
+        "texts": {
+            "front": "この{subject}に合う服を、AIが設計する",
+            "design": "Gemini Robotics-ERが、\n人台に合う服の前身頃を設計",
+            "pipeline": (
+                "① Gemini Robotics-ER: {subject}の正面画像を見て、服(前身頃)の線を設計\n"
+                "② Python(Blender API): ERの線を3Dの人台に投影し、洋裁の基準線(脇・肩・袖ぐり)に合わせて補正し、"
+                "平面の型紙に展開\n"
+                "③ Blender: 型紙を布に描く(実線=裁つ線、破線=縫う線)\n"
+                "④ Gemini Robotics-ER: 『型紙のパーツを切り抜いて』とだけ指示し、布の画像から切る線を判断\n"
+                "⑤ MuJoCo: 刃先が線をなぞるPandaの関節角を計算(IK)\n"
+                "⑥ Blender: 関節角どおりにPandaを動かして、布を切る様子を描画"
+            ),
+            "select": "『型紙のパーツを切り抜いて』とだけ指示 → ERは外側の実線(裁ち切り線)を選んだ",
+            "robot": "ERが選んだ線に沿ってPandaが切り、ERが示した点をつかんで持ち上げる(等倍)",
+            "ending_title": "今回の限界と今後",
+            # テキストのストリップは空白でしか折り返さないので、日本語は手で改行する
+            "ending_body": (
+                "ロボットは、切る前に撮った画像1枚から決めた軌道を、\n"
+                "作業中に布を見直さずにそのまま実行している(開ループ制御)。\n\n"
+                "実際の布は刃に引かれてずれたり、しわが寄ったりするため、\n"
+                "作業中もカメラで布を見て軌道を修正し続ける仕組み\n"
+                "(閉ループ制御。例: VLAモデル)が今後の課題"
+            ),
+        },
+        # テロップ(箱付き)は区間の前半6割だけ出して0.5秒で消す。箱は薄く
+        "caption": {"show": 0.6, "fade": 12, "box_alpha": 0.35},
+        "robot_offset_y": 60,  # ロボットの映像を上へずらす(px)。下端のテロップと布が重ならないように
     },
 }
 ASSETS: dict = VERSIONS["bear3"]["assets"]
@@ -98,15 +128,17 @@ class Timeline:
         self.frame = 1
         self.fonts = {k: bpy.data.fonts.load(p) for k, p in (("bold", FONT_BOLD), ("reg", FONT_REG))}
         self.sections: list[tuple[str, float]] = []
+        self.caption: dict = {}  # 箱付きテロップの出し方(show: 区間の何割で消すか、fade: フレーム、box_alpha)
 
     def background(self, length: int, color=(0.08, 0.09, 0.11)) -> None:
         s = self.ed.strips.new_effect("bg", type="COLOR", channel=1, frame_start=self.frame, length=length)
         s.color = color
 
-    def still(self, path: Path, length: int) -> None:
+    def still(self, path: Path, length: int, offset_x: int = 0) -> None:
         self.background(length)
         s = self.ed.strips.new_image(path.stem, str(path), channel=2, frame_start=self.frame, fit_method="FIT")
         s.frame_final_duration = length
+        s.transform.offset_x = offset_x
 
     def slides(self, paths: list[Path], each: int) -> int:
         """静止画を1枚ずつeachフレームずつ並べる。"""
@@ -117,36 +149,49 @@ class Timeline:
             s.frame_final_duration = each
         return each * len(paths)
 
-    def sequence(self, folder: Path, hold: int = 0) -> int:
+    def sequence(self, folder: Path, hold: int = 0, offset_y: int = 0) -> int:
         frames = sorted(folder.glob("*.png"))
         s = self.ed.strips.new_image(folder.name, str(frames[0]), channel=2, frame_start=self.frame, fit_method="FIT")
         for f in frames[1:]:
             s.elements.append(f.name)
+        s.transform.offset_y = offset_y
         length = len(frames)
         if hold:
             # 最後のコマを止めて見せる
             last = self.ed.strips.new_image(f"{folder.name}_hold", str(frames[-1]), channel=2,
                                             frame_start=self.frame + length, fit_method="FIT")
             last.frame_final_duration = hold
+            last.transform.offset_y = offset_y
             length += hold
         self.background(length)
         return length
 
     def text(self, body: str, length: int, *, y: float = 0.06, size: int = 34, bold: bool = True,
-             box: bool = True, channel: int = 3, align: str = "CENTER") -> None:
-        s = self.ed.strips.new_effect("text", type="TEXT", channel=channel, frame_start=self.frame, length=length)
+             box: bool = True, channel: int = 3, align: str = "CENTER", x: float = 0.5,
+             anchor: tuple[str, str] = ("CENTER", "BOTTOM"), wrap: float = 0.92, start: int = 0) -> None:
+        fade = box and bool(self.caption)
+        if fade:  # 区間の前半だけ出して消す(最短2秒)
+            length = min(length, max(round(length * self.caption["show"]), 2 * FPS))
+        s = self.ed.strips.new_effect("text", type="TEXT", channel=channel, frame_start=self.frame + start,
+                                      length=length)
         s.text = body
         s.font = self.fonts["bold" if bold else "reg"]
         s.font_size = size
-        s.location = (0.5, y)
-        s.anchor_x, s.anchor_y = "CENTER", "BOTTOM"
+        s.location = (x, y)
+        s.anchor_x, s.anchor_y = anchor
         s.alignment_x = align
-        s.wrap_width = 0.92
+        s.wrap_width = wrap
         s.color = (1, 1, 1, 1)
         s.use_shadow = not box
         s.use_box = box
-        s.box_color = (0, 0, 0, 0.6)
+        s.box_color = (0, 0, 0, self.caption.get("box_alpha", 0.6))
         s.box_margin = 0.012
+        if fade:
+            end = self.frame + start + length
+            s.blend_alpha = 1.0
+            s.keyframe_insert("blend_alpha", frame=end - self.caption["fade"])
+            s.blend_alpha = 0.0
+            s.keyframe_insert("blend_alpha", frame=end)
 
     def advance(self, name: str, length: int) -> None:
         self.sections.append((name, length / FPS))
@@ -163,6 +208,26 @@ def reason_lines(key: str) -> str | None:
     return "\n".join(t for t in (f"ERの説明: {ja}" if ja else None, f"(原文) {en}" if en else None) if t)
 
 
+PROMPT_X = 0.565  # プロンプトを出す区間: 画像を左へ寄せ、この位置から右にテキストを置く
+IMAGE_LEFT = -(W - H) // 2  # 正方形の画像を左端に寄せるずれ(px)
+
+
+def er_section(tl: "Timeline", image: Path, er_json: Path, heading: str, length: int) -> None:
+    """ERの区間(プロンプト表示版): 左に画像、右に見出しとERへ与えたプロンプトの全文(英文のまま)。"""
+    tl.still(image, length, offset_x=IMAGE_LEFT)
+    wrap = 0.98 - PROMPT_X
+    tl.text(heading, length, x=PROMPT_X, y=0.95, size=24, align="LEFT", anchor=("LEFT", "TOP"), wrap=wrap,
+            box=False)
+    prompt = json.loads(er_json.read_text()).get("prompt")
+    if not prompt:
+        print(f"警告: {er_json.name}に\"prompt\"がない")
+        return
+    tl.text("ERに与えたプロンプト(全文)", length, x=PROMPT_X, y=0.76, size=18, align="LEFT",
+            anchor=("LEFT", "TOP"), wrap=wrap, box=False, channel=4)
+    tl.text(prompt, length, x=PROMPT_X, y=0.71, size=13, bold=False, align="LEFT", anchor=("LEFT", "TOP"),
+            wrap=wrap, box=False, channel=5)
+
+
 def main() -> None:
     argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
@@ -174,6 +239,7 @@ def main() -> None:
     ver = VERSIONS[args.version]
     ASSETS, REASON_JA, SUBJECT = ver["assets"], ver["reason_ja"], ver["subject"]
     short = ver["short"]
+    texts, show_prompt = ver.get("texts", {}), ver.get("show_prompt", False)
     args.robot = args.robot or ASSETS["robot"]
     args.out = args.out or ASSETS["out"]
     robot = args.robot if args.robot.is_absolute() else ROOT / args.robot
@@ -186,7 +252,8 @@ def main() -> None:
     r.fps = FPS
 
     tl = Timeline()
-    sec = {k: round(v * FPS) for k, v in SECONDS.items()}
+    tl.caption = ver.get("caption", {})
+    sec = {k: round(v * FPS) for k, v in (SECONDS | ver.get("seconds", {})).items()}
 
     # 1. タイトル
     tl.background(sec["title"])
@@ -198,18 +265,23 @@ def main() -> None:
     # 2. 仕組み
     tl.background(sec["pipeline"])
     tl.text("仕組み", sec["pipeline"], y=0.80, size=48, box=False)
-    tl.text(PIPELINE_TEXT.format(subject=short), sec["pipeline"], y=0.18, size=28, bold=False, box=False, channel=4, align="LEFT")
+    tl.text(texts.get("pipeline", PIPELINE_TEXT).format(subject=short), sec["pipeline"], y=0.18, size=28, bold=False, box=False, channel=4, align="LEFT")
     tl.advance("仕組み", sec["pipeline"])
 
     # 3. モデルの正面 → ERの設計線
     tl.still(ASSETS["bear_front"], sec["bear_front"])
-    tl.text(f"この{SUBJECT}に合う服を、AIに設計させる", sec["bear_front"])
+    tl.text(texts.get("front", "この{subject}に合う服を、AIに設計させる").format(subject=SUBJECT), sec["bear_front"])
     tl.advance("モデルの正面", sec["bear_front"])
-    tl.still(ASSETS["design_overlay"], sec["design"])
-    tl.text(f"Gemini Robotics-ERが{short}に合う{ASSETS['garment']}を設計", sec["design"], y=0.89)
-    design_reason = reason_lines("design_er")
-    if design_reason:
-        tl.text(design_reason, sec["design"], y=0.02, size=22, bold=False, channel=4)
+    design_heading = texts.get("design", f"Gemini Robotics-ERが{short}に合う{ASSETS['garment']}を設計")
+    design_reason = None
+    if show_prompt:
+        er_section(tl, ASSETS["design_overlay"], ASSETS["design_er"], design_heading, sec["design"])
+    else:
+        tl.still(ASSETS["design_overlay"], sec["design"])
+        tl.text(design_heading, sec["design"], y=0.89)
+        design_reason = reason_lines("design_er")
+        if design_reason:
+            tl.text(design_reason, sec["design"], y=0.02, size=22, bold=False, channel=4)
     tl.advance("ERが服を設計", sec["design"])
 
     # 4. 投影と微調整
@@ -243,24 +315,35 @@ def main() -> None:
         tl.advance("布の型紙", sec["overhead"])
 
     # 7. ERが切る線を選ぶ
-    tl.still(ASSETS["select_overlay"], sec["select"])
-    tl.text("線の意味は教えずに切り抜きを指示 → ERは外側の実線を選んだ", sec["select"], y=0.89)
-    select_reason = reason_lines("select_er")
-    if select_reason:
-        tl.text(select_reason, sec["select"], y=0.02, size=22, bold=False, channel=4)
+    select_heading = texts.get("select", "線の意味は教えずに切り抜きを指示 → ERは外側の実線を選んだ")
+    select_reason = None
+    if show_prompt:
+        er_section(tl, ASSETS["select_overlay"], ASSETS["select_er"], select_heading, sec["select"])
+    else:
+        tl.still(ASSETS["select_overlay"], sec["select"])
+        tl.text(select_heading, sec["select"], y=0.89)
+        select_reason = reason_lines("select_er")
+        if select_reason:
+            tl.text(select_reason, sec["select"], y=0.02, size=22, bold=False, channel=4)
     tl.advance("ERが切る線を選ぶ", sec["select"])
 
     # 8. ロボットの切断(等倍。最後のコマを少し止める)
-    n = tl.sequence(robot, hold=sec["robot_hold"])
-    tl.text("ERが選んだ線に沿って、Pandaが刃でなぞって切る(等倍)", n)
+    n = tl.sequence(robot, hold=sec["robot_hold"], offset_y=ver.get("robot_offset_y", 0))
+    robot_text = texts.get("robot", "ERが選んだ線に沿って、Pandaが刃でなぞって切る(等倍)")
+    tl.text(robot_text, n)
     tl.advance("ロボットの切断", n)
 
     # 9. エンディング
     tl.background(sec["ending"])
-    tl.text("開ループの限界と今後", sec["ending"], y=0.55, size=48, box=False)
-    tl.text("最初の画像1枚で軌道を決めるため、布がずれても追従できない。\n"
-            "手足をVLAに置き換え、カメラを見ながら動く閉ループにしたい",
-            sec["ending"], y=0.33, size=30, bold=False, box=False, channel=4)
+    if "ending_body" in texts:
+        tl.text(texts["ending_title"], sec["ending"], y=0.66, size=48, box=False)
+        tl.text(texts["ending_body"], sec["ending"], y=0.18, size=28, bold=False, box=False, channel=4,
+                align="LEFT")
+    else:
+        tl.text("開ループの限界と今後", sec["ending"], y=0.55, size=48, box=False)
+        tl.text("最初の画像1枚で軌道を決めるため、布がずれても追従できない。\n"
+                "手足をVLAに置き換え、カメラを見ながら動く閉ループにしたい",
+                sec["ending"], y=0.33, size=30, bold=False, box=False, channel=4)
     tl.advance("エンディング", sec["ending"])
 
     scene.frame_start, scene.frame_end = 1, tl.frame - 1

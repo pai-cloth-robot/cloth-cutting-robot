@@ -453,6 +453,9 @@ def flatten2(panel) -> tuple[list[Vector], list[int], dict]:
 
 # ---------- 画像 ----------
 
+BEFORE_UNFOLD = None  # (服のオブジェクト) -> None。平面に開く画像を描く直前に呼ぶ(見た目の差し替え用)
+
+
 def polyline(name, pts, rgba, width) -> bpy.types.Object:
     curve = bpy.data.curves.new(name, "CURVE")
     curve.dimensions = "3D"
@@ -596,6 +599,8 @@ def stage2(cam, bvh: BVHTree, info: dict, poly_px: list, source: str, anim: bool
     render(oblique, OUT / "dressed.png", (1280, 720))
 
     # 平面に開く(bear.pyと同じ流れ)。カメラはクマの右隣まで入る構図
+    if BEFORE_UNFOLD is not None:
+        BEFORE_UNFOLD(garment)
     side = add_camera("Cam_Unfold", *UNFOLD_CAM)
     bpy.context.scene.camera = side
     bpy.context.scene.render.resolution_x, bpy.context.scene.render.resolution_y = 1280, 720
