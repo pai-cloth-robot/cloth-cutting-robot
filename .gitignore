@@ -1,3 +1,10 @@
 # 他の受講生の投稿を含むため公開しない
 docs/reference/slack-anonymity-qa.md
 .DS_Store
+# 実行時に生成するもの(メッシュ28MB・姿勢JSON数MB)
+kin/out/
+.venv/
+# 動画用の連番画像(容量が大きい・再生成できる)
+renders/anim_*/
+renders/robot_*.png
+__pycache__/
