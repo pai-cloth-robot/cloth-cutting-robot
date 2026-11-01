@@ -10,3 +10,6 @@ renders/robot_*.png
 __pycache__/
 renders/video/
 renders/*/anim/
+# 計画とレポート材料はリポジトリに入れない(レポートPDFは別に提出)
+docs/plan/
+docs/report/
